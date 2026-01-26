@@ -7,6 +7,7 @@ from werkzeug.utils import secure_filename
 import tempfile
 from pathlib import Path
 from converters.document_converter import DocumentConverter
+from src.config import create_config_from_request
 
 # 配置模板目录为项目根目录下的templates文件夹
 template_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates')
@@ -44,6 +45,30 @@ def convert_document():
                 'error': f'Unsupported file type. Supported formats: {", ".join(converter.get_supported_formats())}'
             }), 400
         
+        # 获取样式配置（可选）
+        style_config = {}
+        try:
+            # 尝试获取JSON数据
+            if request.is_json:
+                config_data = request.get_json() or {}
+                style_config = config_data.get('style_config', {})
+            # 如果不是JSON，检查表单数据
+            elif request.form:
+                style_config_str = request.form.get('style_config', '{}')
+                import json
+                style_config = json.loads(style_config_str) if style_config_str else {}
+        except Exception:
+            # 如果解析失败，使用默认配置
+            style_config = {}
+        
+        # 创建转换器实例（带配置）
+        if style_config:
+            from src.config import ConversionConfig
+            custom_config = ConversionConfig(style_config)
+            converter_with_config = DocumentConverter(custom_config)
+        else:
+            converter_with_config = converter
+        
         # 保存上传的文件
         filename = secure_filename(file.filename)
         upload_path = os.path.join(uploads_dir, filename)
@@ -51,7 +76,7 @@ def convert_document():
         
         # 转换文档
         try:
-            output_path = converter.convert_to_html(upload_path)
+            output_path = converter_with_config.convert_to_html(upload_path)
             
             if output_path is None:
                 raise RuntimeError("Conversion returned None")
@@ -74,7 +99,8 @@ def convert_document():
             return jsonify({
                 'success': True,
                 'download_url': f'/download/{download_name}',
-                'filename': download_name
+                'filename': download_name,
+                'config_applied': bool(style_config)
             })
             
         except Exception as e:
@@ -108,6 +134,26 @@ def get_supported_formats():
         'note': 'PDF files are not supported for conversion. Pandoc can export to PDF but not convert from PDF.'
     })
 
+@app.route('/api/config')
+def get_default_config():
+    """获取默认样式配置"""
+    return jsonify({
+        'default_config': {
+            'doc': {
+                'allowed_styles': list(converter.config.get_allowed_styles('doc')),
+                'allowed_classes': list(converter.config.get_allowed_classes('doc'))
+            },
+            'epub': {
+                'allowed_styles': list(converter.config.get_allowed_styles('epub')),
+                'allowed_classes': list(converter.config.get_allowed_classes('epub'))
+            },
+            'pdf': {
+                'allowed_styles': list(converter.config.get_allowed_styles('pdf')),
+                'allowed_classes': list(converter.config.get_allowed_classes('pdf'))
+            }
+        }
+    })
+
 @app.route('/api/health')
 def health_check():
     """健康检查"""
@@ -121,5 +167,9 @@ if __name__ == '__main__':
     if not converter.pandoc_available:
         print("警告: pandoc未安装或不可用，某些转换功能可能无法使用")
         print("请访问 https://pandoc.org/installing.html 安装pandoc")
+    
+    # 禁用生产环境警告（可选）
+    # import warnings
+    # warnings.filterwarnings("ignore", category=UserWarning, module="werkzeug")
     
     app.run(debug=True, host='0.0.0.0', port=5000)

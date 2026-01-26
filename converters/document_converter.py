@@ -2,8 +2,11 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 import re
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.config import ConversionConfig, DEFAULT_CONFIG
 try:
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -34,8 +37,9 @@ except ImportError:
 class DocumentConverter:
     """基于pandoc的文档转换器"""
     
-    def __init__(self):
+    def __init__(self, config: Optional[ConversionConfig] = None):
         self.pandoc_available = self._check_pandoc()
+        self.config = config if config is not None else DEFAULT_CONFIG
     
     def _check_pandoc(self) -> bool:
         """检查pandoc是否可用"""
@@ -167,34 +171,53 @@ class DocumentConverter:
             with open(output_file, 'r', encoding='utf-8') as f:
                 html_content = f.read()
             
-            # 如果有对齐信息，应用到HTML段落
+            # 如果有对齐信息，应用到HTML段落（根据配置过滤）
             if alignment_info:
                 p_pattern = r'<p[^>]*>(.*?)</p>'
                 paragraphs = re.findall(p_pattern, html_content, re.DOTALL)
                 
                 for i, (paragraph, alignment) in enumerate(zip(paragraphs, alignment_info)):
                     if i < len(paragraphs):
-                        style_map = {
-                            'center': 'text-align: center;',
-                            'right': 'text-align: right;',
-                            'justify': 'text-align: justify;',
-                            'left': 'text-align: left;'
-                        }
+                        # 根据配置检查对齐样式是否被允许
+                        allowed_styles = self.config.get_allowed_styles('doc')
+                        style_map = {}
+                        
+                        if 'text-align' in allowed_styles:
+                            if alignment == 'center':
+                                style_map['text-align'] = 'center'
+                            elif alignment == 'right':
+                                style_map['text-align'] = 'right'
+                            elif alignment == 'justify':
+                                style_map['text-align'] = 'justify'
+                            else:
+                                style_map['text-align'] = 'left'
+                        
+                        # 构建样式字符串
+                        style_str = '; '.join([f'{k}: {v}' for k, v in style_map.items()])
                         
                         old_p = f'<p>{paragraph}</p>'
-                        new_p = f'<p style="{style_map.get(alignment, "")}">{paragraph}</p>'
+                        new_p = f'<p style="{style_str}">{paragraph}</p>' if style_str else f'<p>{paragraph}</p>'
                         html_content = html_content.replace(old_p, new_p, 1)
             
-            # 添加CSS样式
+            # 根据配置添加CSS样式
+            allowed_styles = self.config.get_allowed_styles('doc')
+            allowed_classes = self.config.get_allowed_classes('doc')
+            
             css_style = """
             <style>
             body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
             p { margin-bottom: 1em; line-height: 1.6; }
-            .center { text-align: center !important; }
-            .right { text-align: right !important; }
-            .justify { text-align: justify !important; }
-            </style>
             """
+            
+            # 根据允许的类名添加CSS规则
+            if 'center' in allowed_classes:
+                css_style += ".center { text-align: center !important; }\n"
+            if 'right' in allowed_classes:
+                css_style += ".right { text-align: right !important; }\n"
+            if 'justify' in allowed_classes:
+                css_style += ".justify { text-align: justify !important; }\n"
+            
+            css_style += "</style>\n"
             
             # 在</head>前插入CSS样式
             if '</head>' in html_content:
@@ -218,12 +241,12 @@ class DocumentConverter:
         if not PDFPLUMBER_AVAILABLE:
             raise RuntimeError("pdfplumber is not available for PDF conversion")
         
-        html_content = """<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>PDF Conversion</title>
-    <style>
+        # 根据配置生成CSS样式
+        allowed_styles = self.config.get_allowed_styles('pdf')
+        allowed_classes = self.config.get_allowed_classes('pdf')
+        
+        css_style = """
+        <style>
         body { 
             font-family: Arial, sans-serif; 
             max-width: 800px; 
@@ -250,12 +273,28 @@ class DocumentConverter:
             margin: 1.5em 0 0.8em 0; 
             text-indent: 0;
         }
-        .center { text-align: center !important; }
-        .right { text-align: right !important; }
-        .bold { font-weight: bold; }
-        .italic { font-style: italic; }
-        .underline { text-decoration: underline; }
-    </style>
+        """
+        
+        # 根据允许的类名添加CSS规则
+        if 'center' in allowed_classes:
+            css_style += ".center { text-align: center !important; }\n"
+        if 'right' in allowed_classes:
+            css_style += ".right { text-align: right !important; }\n"
+        if 'bold' in allowed_classes:
+            css_style += ".bold { font-weight: bold; }\n"
+        if 'italic' in allowed_classes:
+            css_style += ".italic { font-style: italic; }\n"
+        if 'underline' in allowed_classes:
+            css_style += ".underline { text-decoration: underline; }\n"
+        
+        css_style += "</style>\n"
+        
+        html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>PDF Conversion</title>
+    {css_style}
 </head>
 <body>
 """
@@ -469,7 +508,7 @@ class DocumentConverter:
                         # 应用CSS样式为行内样式
                         if css_content:
                             css_rules = self._parse_css_rules(css_content)
-                            self._apply_css_inline(soup, css_rules)
+                            self._apply_css_inline(soup, css_rules, 'epub')
                         
                         # 替换图片src为base64数据
                         for img in soup.find_all('img'):
@@ -554,54 +593,61 @@ class DocumentConverter:
         
         return rules
     
-    def _apply_css_inline(self, soup, css_rules):
-        """将CSS规则应用为行内样式"""
+    def _apply_css_inline(self, soup, css_rules, format_type: str = 'epub'):
+        """将CSS规则应用为行内样式，根据配置过滤样式"""
         
         for selector, styles in css_rules.items():
             # 处理class选择器 (.classname)
             if selector.startswith('.'):
                 class_name = selector[1:]
-                elements = soup.find_all(class_=lambda c: c and class_name in str(c).split())
-                for element in elements:
-                    self._add_inline_style(element, styles)
-                    # 递归应用到子元素
-                    for child in element.find_all(True):
-                        self._add_inline_style(child, styles)
+                # 检查类名是否被允许
+                if self.config.is_class_allowed(format_type, class_name):
+                    elements = soup.find_all(class_=lambda c: c and class_name in str(c).split())
+                    for element in elements:
+                        self._add_inline_style(element, styles, format_type)
+                        # 递归应用到子元素
+                        for child in element.find_all(True):
+                            self._add_inline_style(child, styles, format_type)
             
             # 处理标签选择器 (p, h1, span, em, strong, etc.)
             elif selector.isalpha() or selector in ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'div', 'span', 'em', 'strong', 'b', 'i', 'u']:
                 elements = soup.find_all(selector)
                 for element in elements:
-                    self._add_inline_style(element, styles)
+                    self._add_inline_style(element, styles, format_type)
             
             # 处理ID选择器 (#id)
             elif selector.startswith('#'):
                 id_name = selector[1:]
                 element = soup.find(id=id_name)
                 if element:
-                    self._add_inline_style(element, styles)
+                    self._add_inline_style(element, styles, format_type)
                     # 递归应用到子元素
                     for child in element.find_all(True):
-                        self._add_inline_style(child, styles)
+                        self._add_inline_style(child, styles, format_type)
             
             # 处理组合选择器 (element.class)
             elif '.' in selector and not selector.startswith('.'):
                 parts = selector.split('.')
                 if len(parts) == 2:
                     tag, class_name = parts
-                    elements = soup.find_all(tag, class_=lambda c: c and class_name in str(c).split())
-                    for element in elements:
-                        self._add_inline_style(element, styles)
-                        # 递归应用到子元素
-                        for child in element.find_all(True):
-                            self._add_inline_style(child, styles)
+                    # 检查类名是否被允许
+                    if self.config.is_class_allowed(format_type, class_name):
+                        elements = soup.find_all(tag, class_=lambda c: c and class_name in str(c).split())
+                        for element in elements:
+                            self._add_inline_style(element, styles, format_type)
+                            # 递归应用到子元素
+                            for child in element.find_all(True):
+                                self._add_inline_style(child, styles, format_type)
     
-    def _add_inline_style(self, element, styles):
-        """为元素添加行内样式"""
+    def _add_inline_style(self, element, styles, format_type: str = 'epub'):
+        """为元素添加行内样式，根据配置过滤样式"""
+        # 根据格式类型过滤样式
+        filtered_styles = self.config.filter_styles(format_type, styles)
+        
         existing_style = element.get('style', '')
         
-        # 将新样式添加到现有样式
-        for prop, value in styles.items():
+        # 将过滤后的样式添加到现有样式
+        for prop, value in filtered_styles.items():
             # 移除已存在的同名属性
             existing_style = re.sub(rf'{re.escape(prop)}\s*:\s*[^;]*;?', '', existing_style, flags=re.IGNORECASE)
             # 添加新样式

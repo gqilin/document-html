@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pandoc文档转换器</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f0f4f8;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: #2563eb;
+            color: white;
+            padding: 40px 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1rem;
+        }
+        
+        .main {
+            padding: 40px 30px;
+        }
+        
+        .upload-area {
+            border: 2px dashed #cbd5e1;
+            border-radius: 12px;
+            padding: 60px 20px;
+            text-align: center;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            background: #f8fafc;
+        }
+        
+        .upload-area:hover {
+            border-color: #2563eb;
+            background: #eff6ff;
+        }
+        
+        .upload-area.dragover {
+            border-color: #2563eb;
+            background: #eff6ff;
+            transform: scale(1.01);
+        }
+        
+        .upload-icon {
+            font-size: 3.5rem;
+            color: #2563eb;
+            margin-bottom: 20px;
+        }
+        
+        .upload-text {
+            font-size: 1.2rem;
+            color: #666;
+            margin-bottom: 10px;
+        }
+        
+        .upload-hint {
+            color: #999;
+            font-size: 0.9rem;
+        }
+        
+        .file-input {
+            display: none;
+        }
+        
+        .btn {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 14px 28px;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-top: 20px;
+        }
+        
+        .btn:hover {
+            background: #1d4ed8;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+        }
+        
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .progress {
+            display: none;
+            margin-top: 30px;
+        }
+        
+        .progress-bar {
+            background: #e2e8f0;
+            border-radius: 6px;
+            height: 8px;
+            overflow: hidden;
+        }
+        
+        .progress-fill {
+            background: #2563eb;
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        
+        .result {
+            display: none;
+            margin-top: 30px;
+            padding: 20px;
+            background: #f0f9ff;
+            border-radius: 8px;
+            border-left: 4px solid #2563eb;
+        }
+        
+        .error {
+            display: none;
+            margin-top: 30px;
+            padding: 20px;
+            background: #fef2f2;
+            border-radius: 8px;
+            border-left: 4px solid #ef4444;
+            color: #dc2626;
+        }
+        
+        .formats {
+            margin-top: 40px;
+            padding: 20px;
+            background: #f8fafc;
+            border-radius: 8px;
+        }
+        
+        .formats h3 {
+            margin-bottom: 15px;
+            color: #333;
+        }
+        
+        .format-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        
+        .format-tag {
+            background: #2563eb;
+            color: white;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+        
+        .status {
+            margin-top: 20px;
+            padding: 12px;
+            border-radius: 6px;
+            text-align: center;
+            font-size: 0.9rem;
+        }
+        
+        .status.warning {
+            background: #fef3c7;
+            color: #92400e;
+            border: 1px solid #fcd34d;
+        }
+        
+        .status.success {
+            background: #dcfce7;
+            color: #166534;
+            border: 1px solid #86efac;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Pandoc文档转换器</h1>
+            <p>支持DOC、DOCX、PDF、EPUB等格式转换为HTML</p>
+        </div>
+        
+        <div class="main">
+            <div id="status" class="status" style="display: none;"></div>
+            
+            <div class="upload-area" id="uploadArea">
+                <div class="upload-icon">📁</div>
+                <div class="upload-text">点击选择文件或拖拽文件到此处</div>
+                <div class="upload-hint">支持 DOC、DOCX、PDF、EPUB 等格式</div>
+                <input type="file" id="fileInput" class="file-input" accept=".doc,.docx,.pdf,.epub,.txt,.rtf,.md">
+                <button class="btn" id="selectBtn">选择文件</button>
+            </div>
+            
+            <div class="progress" id="progress">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div style="text-align: center; margin-top: 10px; color: #666;">
+                    正在转换中...
+                </div>
+            </div>
+            
+            <div class="result" id="result">
+                <h3>✅ 转换成功！</h3>
+                <p>您的文档已成功转换为HTML格式。</p>
+                <button class="btn" id="downloadBtn">下载HTML文件</button>
+            </div>
+            
+            <div class="error" id="error">
+                <h3>❌ 转换失败</h3>
+                <p id="errorMessage"></p>
+            </div>
+            
+            <div class="formats">
+                <h3>支持的文件格式</h3>
+                <div class="format-list" id="formatList">
+                    <div class="format-tag">.doc</div>
+                    <div class="format-tag">.docx</div>
+                    <div class="format-tag">.pdf</div>
+                    <div class="format-tag">.epub</div>
+                    <div class="format-tag">.txt</div>
+                    <div class="format-tag">.rtf</div>
+                    <div class="format-tag">.md</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class DocumentConverter {
+            constructor() {
+                this.uploadArea = document.getElementById('uploadArea');
+                this.fileInput = document.getElementById('fileInput');
+                this.selectBtn = document.getElementById('selectBtn');
+                this.progress = document.getElementById('progress');
+                this.progressFill = document.getElementById('progressFill');
+                this.result = document.getElementById('result');
+                this.error = document.getElementById('error');
+                this.errorMessage = document.getElementById('errorMessage');
+                this.downloadBtn = document.getElementById('downloadBtn');
+                this.status = document.getElementById('status');
+                
+                this.currentDownloadUrl = null;
+                this.init();
+            }
+            
+            init() {
+                // 检查服务状态
+                this.checkServiceStatus();
+                
+                // 事件绑定
+                this.selectBtn.addEventListener('click', () => this.fileInput.click());
+                this.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
+                this.downloadBtn.addEventListener('click', () => this.downloadFile());
+                
+                // 拖拽事件
+                this.uploadArea.addEventListener('dragover', (e) => this.handleDragOver(e));
+                this.uploadArea.addEventListener('dragleave', (e) => this.handleDragLeave(e));
+                this.uploadArea.addEventListener('drop', (e) => this.handleDrop(e));
+            }
+            
+            async checkServiceStatus() {
+                try {
+                    const response = await fetch('/api/health');
+                    const data = await response.json();
+                    
+                    if (!data.pandoc_available) {
+                        this.showStatus('warning', '警告: pandoc未安装，某些转换功能可能无法使用');
+                    } else {
+                        this.showStatus('success', '服务运行正常，所有转换功能可用');
+                    }
+                } catch (error) {
+                    this.showStatus('warning', '无法连接到服务，请检查服务器状态');
+                }
+            }
+            
+            showStatus(type, message) {
+                this.status.className = `status ${type}`;
+                this.status.textContent = message;
+                this.status.style.display = 'block';
+            }
+            
+            handleDragOver(e) {
+                e.preventDefault();
+                this.uploadArea.classList.add('dragover');
+            }
+            
+            handleDragLeave(e) {
+                e.preventDefault();
+                this.uploadArea.classList.remove('dragover');
+            }
+            
+            handleDrop(e) {
+                e.preventDefault();
+                this.uploadArea.classList.remove('dragover');
+                
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    this.uploadFile(files[0]);
+                }
+            }
+            
+            handleFileSelect(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    this.uploadFile(file);
+                }
+            }
+            
+            async uploadFile(file) {
+                this.hideAll();
+                this.showProgress();
+                
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                try {
+                    const response = await fetch('/api/convert', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        this.currentDownloadUrl = data.download_url;
+                        this.showResult();
+                    } else {
+                        this.showError(data.error || '转换失败');
+                    }
+                } catch (error) {
+                    this.showError('网络错误，请重试');
+                }
+            }
+            
+            showProgress() {
+                this.progress.style.display = 'block';
+                // 模拟进度条
+                let progress = 0;
+                const interval = setInterval(() => {
+                    progress += Math.random() * 30;
+                    if (progress > 90) progress = 90;
+                    this.progressFill.style.width = progress + '%';
+                }, 200);
+                
+                setTimeout(() => {
+                    clearInterval(interval);
+                    this.progressFill.style.width = '100%';
+                }, 2000);
+            }
+            
+            showResult() {
+                this.progress.style.display = 'none';
+                this.result.style.display = 'block';
+            }
+            
+            showError(message) {
+                this.progress.style.display = 'none';
+                this.errorMessage.textContent = message;
+                this.error.style.display = 'block';
+            }
+            
+            hideAll() {
+                this.progress.style.display = 'none';
+                this.result.style.display = 'none';
+                this.error.style.display = 'none';
+            }
+            
+            downloadFile() {
+                if (this.currentDownloadUrl) {
+                    window.location.href = this.currentDownloadUrl;
+                }
+            }
+        }
+        
+        // 初始化应用
+        document.addEventListener('DOMContentLoaded', () => {
+            new DocumentConverter();
+        });
+    </script>
+</body>
+</html>

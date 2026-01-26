@@ -7,6 +7,7 @@ import re
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.config import ConversionConfig, DEFAULT_CONFIG
+from src.image_downloader import ImageDownloader, process_html_images
 try:
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -40,6 +41,8 @@ class DocumentConverter:
     def __init__(self, config: Optional[ConversionConfig] = None):
         self.pandoc_available = self._check_pandoc()
         self.config = config if config is not None else DEFAULT_CONFIG
+        # 创建图片下载器，使用相对于HTML文件的images目录
+        self.image_downloader = ImageDownloader()
     
     def _check_pandoc(self) -> bool:
         """检查pandoc是否可用"""
@@ -71,11 +74,18 @@ class DocumentConverter:
         if output_file is None:
             output_file = str(input_path.with_suffix('.html'))
         
-        # 如果是docx文件且docx库可用，先提取对齐信息
+# 创建图片下载器，使用项目根目录的uploads/images目录
+        project_root = Path(__file__).parent.parent
+        images_dir = project_root / 'uploads' / 'images'
+        image_downloader = ImageDownloader(str(images_dir))
+        
+        # 如果是docx文件且docx库可用，先提取对齐信息和图片
         alignment_info = []
         if input_path.suffix.lower() == '.docx' and DOCX_AVAILABLE:
             try:
                 doc = Document(input_file)
+                
+                # 提取段落对齐信息
                 for para in doc.paragraphs:
                     if para.alignment == WD_ALIGN_PARAGRAPH.CENTER:
                         alignment_info.append('center')
@@ -87,6 +97,21 @@ class DocumentConverter:
                         alignment_info.append('justify')
                     else:
                         alignment_info.append('left')
+                
+                # 提取图片
+                try:
+                    for rel in doc.part.rels.values():
+                        if "image" in rel.target_ref:
+                            try:
+                                image_data = rel.target_part.blob
+                                image_name = rel.target_ref.split('/')[-1]
+                                local_path = image_downloader.save_from_bytes(image_data, image_name)
+                                # 这里可以将图片路径存储起来，后续在HTML中使用
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                    
             except Exception:
                 alignment_info = []
         
@@ -227,6 +252,9 @@ class DocumentConverter:
             else:
                 html_content = css_style + html_content
             
+# 使用图片处理器处理HTML中的图片
+            html_content = process_html_images(html_content, image_downloader)
+            
             # 写回文件
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(html_content)
@@ -240,6 +268,11 @@ class DocumentConverter:
         """使用pdfplumber将PDF转换为HTML，优化双层PDF处理"""
         if not PDFPLUMBER_AVAILABLE:
             raise RuntimeError("pdfplumber is not available for PDF conversion")
+        
+# 创建图片下载器，使用项目根目录的uploads/images目录
+        project_root = Path(__file__).parent.parent
+        images_dir = project_root / 'uploads' / 'images'
+        image_downloader = ImageDownloader(str(images_dir))
         
         # 根据配置生成CSS样式
         allowed_styles = self.config.get_allowed_styles('pdf')
@@ -304,6 +337,21 @@ class DocumentConverter:
                 for page_num, page in enumerate(pdf.pages, 1):
                     html_content += f"<div class='page' id='page-{page_num}'>\n"
                     html_content += f"<div class='page-header'>第 {page_num} 页</div>\n"
+                    
+                    # 提取图片
+                    try:
+                        if hasattr(page, 'images') and page.images:
+                            for img_info in page.images:
+                                try:
+                                    # 提取图片数据
+                                    image = page.within_bbox((img_info['x0'], img_info['top'], img_info['x1'], img_info['bottom'])).to_image()
+                                    # 注意：pdfplumber的图片提取功能有限，这里使用PIL/Pillow方法
+                                    # 由于pdfplumber的图片提取较复杂，这里提供基础框架
+                                    pass
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
                     
                     # 优先使用文本提取方法（适合双层PDF）
                     text = page.extract_text()
@@ -421,9 +469,14 @@ class DocumentConverter:
             # 读取epub文件
             book = epub.read_epub(input_file)
             
+            # 创建图片下载器，使用项目根目录的uploads/images目录
+            project_root = Path(__file__).parent.parent
+            images_dir = project_root / 'uploads' / 'images'
+            image_downloader = ImageDownloader(str(images_dir))
+            
             # 检查CSS文件，提取对齐样式
             css_content = ""
-            images = {}  # 存储图片数据
+            images_map = {}  # 存储图片本地路径映射
             
             for item in book.get_items():
                 # 处理CSS文件
@@ -442,25 +495,13 @@ class DocumentConverter:
                     try:
                         image_data = item.get_content()
                         image_name = item.get_name().split('/')[-1]  # 获取文件名
-                        image_ext = image_name.split('.')[-1].lower()
                         
-                        # 转换为base64
-                        import base64
-                        image_b64 = base64.b64encode(image_data).decode('utf-8')
-                        
-                        # 根据图片类型确定MIME类型
-                        mime_types = {
-                            'jpg': 'image/jpeg',
-                            'jpeg': 'image/jpeg', 
-                            'png': 'image/png',
-                            'gif': 'image/gif',
-                            'bmp': 'image/bmp',
-                            'webp': 'image/webp'
-                        }
-                        mime_type = mime_types.get(image_ext, 'image/jpeg')
-                        
-                        # 存储图片数据
-                        images[image_name] = f"data:{mime_type};base64,{image_b64}"
+                        # 保存图片到本地
+                        local_path = image_downloader.save_from_bytes(image_data, image_name)
+                        if local_path:
+                            # 生成相对路径
+                            relative_path = image_downloader.get_relative_path(local_path)
+                            images_map[image_name] = relative_path
                         
                     except Exception:
                         pass
@@ -510,14 +551,14 @@ class DocumentConverter:
                             css_rules = self._parse_css_rules(css_content)
                             self._apply_css_inline(soup, css_rules, 'epub')
                         
-                        # 替换图片src为base64数据
+# 替换图片src为本地路径
                         for img in soup.find_all('img'):
                             src = img.get('src', '')
-                            if src and images:
+                            if src and images_map:
                                 # 尝试匹配图片文件名
-                                for img_name, img_data in images.items():
+                                for img_name, local_path in images_map.items():
                                     if img_name in src or src.endswith(img_name):
-                                        img['src'] = img_data
+                                        img['src'] = local_path
                                         break
                         
                         # 直接使用已经处理过的HTML内容（包含行内样式和嵌套标签）

@@ -18,8 +18,10 @@ app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB max file size
 project_root = os.path.dirname(os.path.dirname(__file__))
 uploads_dir = os.path.join(project_root, 'uploads')
 downloads_dir = os.path.join(project_root, 'downloads')
+images_dir = os.path.join(uploads_dir, 'images')
 os.makedirs(uploads_dir, exist_ok=True)
 os.makedirs(downloads_dir, exist_ok=True)
+os.makedirs(images_dir, exist_ok=True)
 
 converter = DocumentConverter()
 

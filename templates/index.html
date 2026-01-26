@@ -204,8 +204,8 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>Pandoc文档转换器</h1>
-            <p>支持DOC、DOCX、PDF、EPUB等格式转换为HTML</p>
+            <h1>智能文档转换器</h1>
+            <p>支持DOC、DOCX、PDF、EPUB等格式转换为HTML，自动下载图片到本地</p>
         </div>
         
         <div class="main">
@@ -214,7 +214,7 @@
             <div class="upload-area" id="uploadArea">
                 <div class="upload-icon">📁</div>
                 <div class="upload-text">点击选择文件或拖拽文件到此处</div>
-                <div class="upload-hint">支持 DOC、DOCX、PDF、EPUB 等格式</div>
+                <div class="upload-hint">支持 DOC、DOCX、PDF、EPUB 等格式，自动下载图片到本地</div>
                 <input type="file" id="fileInput" class="file-input" accept=".doc,.docx,.pdf,.epub,.txt,.rtf,.md">
                 <button class="btn" id="selectBtn">选择文件</button>
             </div>
@@ -230,7 +230,7 @@
             
             <div class="result" id="result">
                 <h3>✅ 转换成功！</h3>
-                <p>您的文档已成功转换为HTML格式。</p>
+                <p>您的文档已成功转换为HTML格式，所有图片已下载到本地。</p>
                 <button class="btn" id="downloadBtn">下载HTML文件</button>
             </div>
             

@@ -214,7 +214,7 @@ class DocumentConverter:
             raise RuntimeError(f"Conversion failed: {e.stderr.decode()}")
     
     def _convert_pdf_to_html(self, input_file: str, output_file: str) -> str:
-        """使用pdfplumber将PDF转换为HTML，保留格式"""
+        """使用pdfplumber将PDF转换为HTML，优化双层PDF处理"""
         if not PDFPLUMBER_AVAILABLE:
             raise RuntimeError("pdfplumber is not available for PDF conversion")
         
@@ -231,13 +231,27 @@ class DocumentConverter:
             padding: 20px; 
             line-height: 1.6;
         }
+        .page { 
+            margin-bottom: 30px; 
+            border-bottom: 1px solid #eee; 
+            padding-bottom: 20px; 
+        }
+        .page-header { 
+            font-weight: bold; 
+            margin-bottom: 15px; 
+            color: #666; 
+        }
         p { 
-            margin-bottom: 0.5em; 
+            margin-bottom: 0.8em; 
+            text-indent: 2em;
             white-space: pre-wrap;
+        }
+        h1, h2, h3, h4, h5, h6 { 
+            margin: 1.5em 0 0.8em 0; 
+            text-indent: 0;
         }
         .center { text-align: center !important; }
         .right { text-align: right !important; }
-        .justify { text-align: justify !important; }
         .bold { font-weight: bold; }
         .italic { font-style: italic; }
         .underline { text-decoration: underline; }
@@ -250,58 +264,27 @@ class DocumentConverter:
             with pdfplumber.open(input_file) as pdf:
                 for page_num, page in enumerate(pdf.pages, 1):
                     html_content += f"<div class='page' id='page-{page_num}'>\n"
+                    html_content += f"<div class='page-header'>第 {page_num} 页</div>\n"
                     
-                    # 提取字符信息
-                    chars = page.chars
-                    if not chars:
-                        # 如果没有字符信息，尝试提取文本
-                        text = page.extract_text()
-                        if text:
-                            html_content += f"<p>{self._escape_html(text)}</p>\n"
+                    # 优先使用文本提取方法（适合双层PDF）
+                    text = page.extract_text()
+                    
+                    if text and text.strip():
+                        # 处理提取的文本
+                        paragraphs = self._extract_text_paragraphs(text)
+                        for paragraph in paragraphs:
+                            if paragraph.strip():
+                                html_content += f"<p>{self._escape_html(paragraph.strip())}</p>\n"
                     else:
-                        # 改进的行组织算法
-                        lines = self._group_chars_into_lines(chars)
-                        
-                        for line_chars in lines:
-                            # 按X坐标排序
-                            line_chars.sort(key=lambda x: x['x0'])
-                            line_html = "<p>"
-                            
-                            i = 0
-                            while i < len(line_chars):
-                                char = line_chars[i]
-                                text = char['text']
-                                
-                                # 提取样式信息
-                                styles = []
-                                if char.get('fontname', '').lower().find('bold') != -1:
-                                    styles.append('bold')
-                                if char.get('fontname', '').lower().find('italic') != -1:
-                                    styles.append('italic')
-                                
-                                # 改进的字符间距判断：考虑字体大小
-                                avg_char_width = char.get('width', 2)
-                                spacing_threshold = avg_char_width * 0.3  # 30%的字符宽度作为阈值
-                                
-                                # 收集相同样式的连续字符
-                                j = i
-                                while (j + 1 < len(line_chars) and 
-                                       line_chars[j + 1]['fontname'] == char['fontname'] and
-                                       abs(line_chars[j + 1]['x0'] - (char['x0'] + char['width'])) <= spacing_threshold):
-                                    j += 1
-                                    text += line_chars[j]['text']
-                                
-                                # 应用样式
-                                if styles:
-                                    class_attr = f" class='{' '.join(styles)}'"
-                                else:
-                                    class_attr = ""
-                                
-                                line_html += f"<span{class_attr}>{self._escape_html(text)}</span>"
-                                i = j + 1
-                            
-                            line_html += "</p>\n"
-                            html_content += line_html
+                        # 回退到字符级处理（扫描版PDF）
+                        chars = page.chars
+                        if chars:
+                            lines = self._group_chars_into_lines(chars)
+                            for line_chars in lines:
+                                line_chars.sort(key=lambda x: x['x0'])
+                                line_text = ''.join(char['text'] for char in line_chars)
+                                if line_text.strip():
+                                    html_content += f"<p>{self._escape_html(line_text.strip())}</p>\n"
                     
                     html_content += "</div>\n"
             
@@ -316,13 +299,78 @@ class DocumentConverter:
         except Exception as e:
             raise RuntimeError(f"PDF conversion failed: {str(e)}")
     
+    def _extract_text_paragraphs(self, text: str) -> list:
+        """从提取的文本中识别段落"""
+        if not text:
+            return []
+        
+        # 按换行符分割，过滤空行
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        paragraphs = []
+        current_paragraph = ""
+        
+        for line in lines:
+            # 如果行很短（可能是标题）或以特殊字符结尾（可能是段落结束）
+            if len(line) < 20 and current_paragraph:
+                if current_paragraph.strip():
+                    paragraphs.append(current_paragraph.strip())
+                current_paragraph = line
+            elif line.endswith(('。', '！', '？', '.', '!', '?', ';', '：')):
+                current_paragraph += line + " "
+                paragraphs.append(current_paragraph.strip())
+                current_paragraph = ""
+            else:
+                current_paragraph += line + " "
+        
+        # 添加最后一个段落
+        if current_paragraph.strip():
+            paragraphs.append(current_paragraph.strip())
+        
+        return [p for p in paragraphs if len(p) > 5]  # 过滤太短的段落
+    
+    def _group_chars_into_lines(self, chars):
+        """改进的字符行分组算法"""
+        if not chars:
+            return []
+        
+        # 按Y坐标聚类，使用更精确的算法
+        lines = []
+        used_chars = set()
+        
+        # 按Y坐标排序
+        sorted_chars = sorted(chars, key=lambda x: x['top'])
+        
+        for i, char in enumerate(sorted_chars):
+            if i in used_chars:
+                continue
+                
+            # 找到同一行的字符
+            line_chars = [char]
+            char_y = char['top']
+            char_height = char.get('height', 10)
+            
+            # 使用字体高度的30%作为行内字符的Y坐标容差
+            y_tolerance = char_height * 0.3
+            
+            for j, other_char in enumerate(sorted_chars):
+                if j != i and j not in used_chars:
+                    other_y = other_char['top']
+                    if abs(other_y - char_y) <= y_tolerance:
+                        line_chars.append(other_char)
+                        used_chars.add(j)
+            
+            used_chars.add(i)
+            lines.append(line_chars)
+        
+        return lines
+    
     def _escape_html(self, text: str) -> str:
         """转义HTML特殊字符"""
         return (text.replace('&', '&amp;')
-                   .replace('<', '&lt;')
-                   .replace('>', '&gt;')
-                   .replace('"', '&quot;')
-                   .replace("'", '&#39;'))
+                    .replace('<', '&lt;')
+                    .replace('>', '&gt;')
+                    .replace('"', '&quot;')
+                    .replace("'", '&#39;'))
     
     def _convert_epub_to_html(self, input_file: str, output_file: str) -> str:
         """直接解析EPUB并保留对齐等格式"""

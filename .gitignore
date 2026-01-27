@@ -1,2 +1,5 @@
-uploads
-downloads
+uploads/*
+downloads/*
+
+!uploads/.gitkeep
+!downloads/.gitkeep

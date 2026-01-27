@@ -6,7 +6,6 @@ from flask import Flask, request, jsonify, render_template, send_file
 from werkzeug.utils import secure_filename
 import tempfile
 from pathlib import Path
-from converters.document_converter import DocumentConverter
 from src.enhanced_document_converter import EnhancedDocumentConverter
 from src.config import create_config_from_request
 
@@ -25,14 +24,9 @@ os.makedirs(downloads_dir, exist_ok=True)
 os.makedirs(images_dir, exist_ok=True)
 
 # 创建转换器实例
-try:
-    # 优先使用增强版转换器（支持paraId精确映射）
-    converter = EnhancedDocumentConverter()
-    print("使用增强版转换器（支持paraId精确样式映射）")
-except Exception as e:
-    # 如果增强版初始化失败，回退到原有转换器
-    converter = DocumentConverter()
-    print(f"增强版转换器不可用，使用原有转换器: {str(e)}")
+# 使用增强版转换器（支持paraId精确映射）
+converter = EnhancedDocumentConverter()
+print("使用增强版转换器（支持paraId精确样式映射）")
 
 @app.route('/')
 def index():
@@ -72,11 +66,11 @@ def convert_document():
             # 如果解析失败，使用默认配置
             style_config = {}
         
-        # 创建转换器实例（带配置）
+# 创建转换器实例（带配置）
         if style_config:
             from src.config import ConversionConfig
             custom_config = ConversionConfig(style_config)
-            converter_with_config = DocumentConverter(custom_config)
+            converter_with_config = EnhancedDocumentConverter(custom_config)
         else:
             converter_with_config = converter
         

@@ -196,43 +196,75 @@ class ParaIdStyleApplicator:
         if not runs_data:
             return
         
-        # 获取段落文本
-        para_text = paragraph_element.get_text()
-        if not para_text:
+        # 获取段落HTML内容（保持原始格式）
+        para_html = str(paragraph_element)
+        if not para_html:
             return
         
         # 构建新的HTML内容，包含内联样式
         new_html_parts = []
-        current_pos = 0
+        processed_runs = set()
         
-        for run_data in runs_data:
+        # 遍历每个run并应用样式
+        for i, run_data in enumerate(runs_data):
             run_text = run_data.get('text', '')
-            if not run_text:
+            if not run_text or i in processed_runs:
                 continue
             
-            # 找到run_text在段落中的位置
-            run_pos = para_text.find(run_text, current_pos)
-            if run_pos == -1:
-                continue
-            
-            # 添加run文本之前的文本
-            if run_pos > current_pos:
-                new_html_parts.append(para_text[current_pos:run_pos])
-            
-            # 添加带样式的run文本
+            # 创建带样式的run文本
             styled_run = self._create_styled_run(run_text, run_data)
-            new_html_parts.append(styled_run)
             
-            current_pos = run_pos + len(run_text)
+            # 尝试替换HTML中的文本
+            # 使用更宽松的匹配来处理HTML实体编码
+            import html
+            run_html = html.escape(run_text)
+            run_html_escaped = run_text.replace('<', '&lt;').replace('>', '&gt;').replace('&', '&amp;')
+            
+            # 尝试多种替换方式
+            if run_text in para_html:
+                new_html = para_html.replace(run_text, styled_run, 1)
+            elif run_html in para_html:
+                new_html = para_html.replace(run_html, styled_run, 1)
+            elif run_html_escaped in para_html:
+                new_html = para_html.replace(run_html_escaped, styled_run, 1)
+            else:
+                # 如果都不匹配，使用正则表达式
+                import re
+                # 转义特殊字符
+                escaped_text = re.escape(run_text)
+                pattern = re.compile(escaped_text)
+                match = pattern.search(para_html)
+                if match:
+                    new_html = para_html[:match.start()] + styled_run + para_html[match.end():]
+                else:
+                    continue
+            
+            para_html = new_html
+            processed_runs.add(i)
+            logger.debug(f"  应用内联样式: {run_text[:20]}... -> {styled_run[:50]}...")
         
-        # 添加剩余文本
-        if current_pos < len(para_text):
-            new_html_parts.append(para_text[current_pos:])
-        
-        # 如果有内联样式，替换段落内容
-        if len(new_html_parts) > 1 or any('<' in part for part in new_html_parts):
-            paragraph_element.clear()
-            paragraph_element.append(''.join(new_html_parts))
+        # 如果有修改，更新段落内容
+        if processed_runs:
+            # 使用BeautifulSoup重新解析并替换内容
+            try:
+                soup = BeautifulSoup(para_html, 'html.parser')
+                # 保留原始标签属性
+                for attr_name, attr_value in paragraph_element.attrs.items():
+                    for child in soup.find_all():
+                        if child.name == paragraph_element.name:
+                            child[attr_name] = attr_value
+                            break
+                
+                # 清空原元素并添加新内容
+                paragraph_element.clear()
+                for content in soup.contents:
+                    paragraph_element.append(content)
+                    
+            except Exception as e:
+                logger.error(f"    内联样式应用失败: {e}")
+                # 回退方案：直接设置HTML
+                paragraph_element.clear()
+                paragraph_element.append(para_html)
     
     def _create_styled_run(self, text: str, run_data: Dict[str, Any]) -> str:
         """
@@ -268,7 +300,12 @@ class ParaIdStyleApplicator:
         # 字体大小
         font_size = run_data.get('font_size')
         if font_size:
-            css_styles.append(f"font-size: {font_size}pt")
+            # 确保字体大小是数字
+            try:
+                size_value = float(font_size)
+                css_styles.append(f"font-size: {size_value}pt")
+            except (ValueError, TypeError):
+                pass
         
         # 字体颜色
         font_color = run_data.get('font_color')

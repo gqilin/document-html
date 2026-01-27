@@ -42,17 +42,9 @@ class ParagraphIdExtractor:
         for para in doc.paragraphs:
             para_id = self._get_paragraph_id(para)
             
-            # 如果没有paraId，但有特殊内容需要处理，强制生成ID
-            if not para_id:
-                # 1. 包含图片的段落
-                if self._paragraph_contains_image(para):
-                    para_id = f"hash_img_{hash(str(para._element.xml)) % 1000000:06d}"
-                # 2. 有对齐设置的段落（如图片标题）
-                elif para.alignment is not None:
-                    para_id = f"hash_align_{hash(str(para._element.xml)) % 1000000:06d}"
-                # 3. 有特殊样式名的段落
-                elif para.style and para.style.name:
-                    para_id = f"hash_style_{hash(str(para._element.xml)) % 1000000:06d}"
+            # 如果没有paraId，但有文本内容，强制生成ID
+            if not para_id and para.text.strip():
+                para_id = f"hash_text_{hash(str(para._element.xml)) % 1000000:06d}"
             
             if para_id:
                 paragraph_data[para_id] = {
@@ -97,20 +89,51 @@ class ParagraphIdExtractor:
         
         try:
             for i, run in enumerate(para.runs):
-                run_data = {
-                    'id': f"{self._get_paragraph_id(para)}_run_{i}",
-                    'text': run.text,
-                    'bold': run.bold,
-                    'italic': run.italic,
-                    'underline': run.underline,
-                    'font_name': run.font.name,
-                    'font_size': run.font.size.pt if run.font.size else None,
-                    'font_color': self._get_color_hex(run.font.color) if run.font.color else None,
-                    'highlight_color': self._get_color_hex(run.font.highlight) if run.font.highlight else None
-                }
-                runs_data.append(run_data)
+                try:
+                    # 安全获取属性
+                    font_color_hex = None
+                    if run.font.color:
+                        font_color_hex = self._get_color_hex(run.font.color)
+                    
+                    # 字体大小处理
+                    font_size = None
+                    if run.font.size:
+                        try:
+                            font_size = run.font.size.pt
+                        except:
+                            # 如果不是Length对象，尝试直接使用
+                            font_size = float(run.font.size)
+                    
+                    run_data = {
+                        'id': f"run_{i}",  # 简化ID生成
+                        'text': run.text if run.text else '',
+                        'bold': run.bold,
+                        'italic': run.italic,
+                        'underline': run.underline,
+                        'font_name': run.font.name,
+                        'font_size': font_size,
+                        'font_color': font_color_hex,
+                        'highlight_color': None  # 暂时禁用highlight，避免错误
+                    }
+                    runs_data.append(run_data)
+                except Exception as e:
+                    # 单个run失败不影响其他run
+                    print(f"Run {i} 提取失败: {e}")
+                    # 添加基本的run数据
+                    runs_data.append({
+                        'id': f"run_{i}",
+                        'text': run.text if run.text else '',
+                        'bold': False,
+                        'italic': False,
+                        'underline': False,
+                        'font_name': None,
+                        'font_size': None,
+                        'font_color': None,
+                        'highlight_color': None
+                    })
                 
-        except Exception:
+        except Exception as e:
+            print(f"提取runs数据失败: {e}")
             pass
         
         return runs_data
@@ -130,28 +153,6 @@ class ParagraphIdExtractor:
             return any(keyword in xml.lower() for keyword in ['graphic', 'blip', 'a:blip', 'pic:pic'])
         except Exception:
             return False
-        """提取段落中文本片段的样式信息"""
-        runs_data = []
-        
-        try:
-            for i, run in enumerate(para.runs):
-                run_data = {
-                    'id': f"{self._get_paragraph_id(para)}_run_{i}",
-                    'text': run.text,
-                    'bold': run.bold,
-                    'italic': run.italic,
-                    'underline': run.underline,
-                    'font_name': run.font.name,
-                    'font_size': run.font.size.pt if run.font.size else None,
-                    'font_color': self._get_color_hex(run.font.color) if run.font.color else None,
-                    'highlight_color': self._get_color_hex(run.font.highlight) if run.font.highlight else None
-                }
-                runs_data.append(run_data)
-                
-        except Exception:
-            pass  # 如果提取失败，跳过runs
-            
-        return runs_data
     
     def _extract_paragraph_format(self, para) -> Dict[str, Any]:
         """提取段落格式信息"""
@@ -164,7 +165,7 @@ class ParagraphIdExtractor:
                     'right_indent': fmt.right_indent.pt if fmt.right_indent else None,
                     'first_line_indent': fmt.first_line_indent.pt if fmt.first_line_indent else None,
                     'space_before': fmt.space_before.pt if fmt.space_before else None,
-                    'space_after': fmt.space_after.pt if fmt.space_after else None,
+                    'space_after': fmt.space_after.pt if fmt.space_before else None,
                     'line_spacing': fmt.line_spacing
                 }
         except Exception:
@@ -183,20 +184,49 @@ class ParagraphIdExtractor:
             十六进制颜色字符串
         """
         try:
-            if hasattr(color_obj, 'rgb'):
-                # RGB颜色
+            if color_obj is None:
+                return None
+                
+            # 检查是否有RGB颜色
+            if hasattr(color_obj, 'rgb') and color_obj.rgb:
+                # RGB颜色 - 可能是RGBColor对象或整数
                 rgb = color_obj.rgb
-                return f"#{rgb:06X}" if rgb else None
-            elif hasattr(color_obj, 'theme_color'):
-                # 主题颜色
-                return f"theme-{color_obj.theme_color}"
-        except Exception:
+                if hasattr(rgb, '__iter__'):  # 如果是可迭代的(R, G, B)
+                    r, g, b = rgb
+                    return f"#{r:02X}{g:02X}{b:02X}"
+                elif isinstance(rgb, int):  # 如果是整数
+                    return f"#{rgb:06X}"
+                else:
+                    # 尝试转换为整数
+                    rgb_int = int(rgb)
+                    return f"#{rgb_int:06X}"
+            
+            # 检查主题颜色
+            if hasattr(color_obj, 'theme_color') and color_obj.theme_color is not None:
+                # 尝试获取主题颜色的实际值
+                theme_color = color_obj.theme_color
+                return f"theme-{theme_color}"
+                
+            # 检查其他颜色属性
+            if hasattr(color_obj, 'color') and color_obj.color:
+                color_val = color_obj.color
+                if isinstance(color_val, int):
+                    return f"#{color_val:06X}"
+                elif hasattr(color_val, '__iter__'):
+                    r, g, b = color_val
+                    return f"#{r:02X}{g:02X}{b:02X}"
+                
+        except Exception as e:
+            # 静默处理颜色提取错误，不影响转换流程
             pass
             
         return None
     
     def get_alignment_name(self, alignment) -> str:
         """将对齐枚举转换为字符串"""
+        if not DOCX_AVAILABLE:
+            return 'left'
+            
         alignment_map = {
             WD_ALIGN_PARAGRAPH.LEFT: 'left',
             WD_ALIGN_PARAGRAPH.CENTER: 'center',

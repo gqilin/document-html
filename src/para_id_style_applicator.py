@@ -1,0 +1,455 @@
+"""
+基于paraId的HTML样式应用器
+精确匹配HTML段落并应用Word样式
+"""
+
+import re
+import logging
+from typing import Dict, Any, Optional, List
+
+try:
+    from bs4 import BeautifulSoup
+    BS4_AVAILABLE = True
+except ImportError:
+    BS4_AVAILABLE = False
+    BeautifulSoup = None
+
+try:
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
+
+# 配置日志
+logger = logging.getLogger(__name__)
+
+
+class ParaIdStyleApplicator:
+    """基于paraId的HTML样式应用器"""
+    
+    def __init__(self, config=None):
+        self.bs4_available = BS4_AVAILABLE
+        self.config = config
+        
+        # 安全的alignment映射，避免导入错误
+        self.alignment_map = {
+            None: 'left',
+            'left': 'left',
+            'center': 'center', 
+            'right': 'right',
+            'justify': 'justify',
+            'distribute': 'justify'
+        }
+        
+        # 如果docx库可用，添加枚举映射
+        if DOCX_AVAILABLE:
+            try:
+                from docx.enum.text import WD_ALIGN_PARAGRAPH
+                self.alignment_map.update({
+                    WD_ALIGN_PARAGRAPH.LEFT: 'left',
+                    WD_ALIGN_PARAGRAPH.CENTER: 'center',
+                    WD_ALIGN_PARAGRAPH.RIGHT: 'right',
+                    WD_ALIGN_PARAGRAPH.JUSTIFY: 'justify',
+                    WD_ALIGN_PARAGRAPH.DISTRIBUTE: 'justify'
+                })
+                logger.info("成功加载WD_ALIGN_PARAGRAPH映射")
+            except Exception as e:
+                logger.warning(f"无法初始化WD_ALIGN_PARAGRAPH映射: {e}")
+        else:
+            logger.info("docx库不可用，使用字符串映射")
+    
+    def apply_styles_by_para_id(self, html_content: str, paragraph_data: Dict[str, Any]) -> str:
+        """
+        根据paraId应用样式到HTML
+        
+        Args:
+            html_content: 原始HTML内容
+            paragraph_data: 段落样式数据 {paraId: 样式信息}
+            
+        Returns:
+            应用样式后的HTML
+        """
+        logger.info(f"开始应用样式，HTML长度: {len(html_content)}, 段落数: {len(paragraph_data)}")
+        
+        if not self.bs4_available:
+            logger.warning("BeautifulSoup不可用，使用正则表达式方式")
+            # 如果BeautifulSoup不可用，使用正则表达式方式
+            return self._apply_styles_with_regex(html_content, paragraph_data)
+        
+        try:
+            if not BS4_AVAILABLE or BeautifulSoup is None:
+                raise ImportError("BeautifulSoup not available")
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            logger.info(f"BeautifulSoup解析成功，找到段落元素: {len(soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']))} 个")
+            
+            elements_with_id = 0
+            elements_styled = 0
+            
+            # 处理段落元素
+            for element in soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                para_id = element.get('id')
+                if para_id:
+                    elements_with_id += 1
+                    logger.debug(f"找到带ID元素: {element.name}#{para_id}")
+                    
+                if para_id and para_id in paragraph_data:
+                    elements_styled += 1
+                    style_info = paragraph_data[para_id]
+                    logger.debug(f"应用样式到 {element.name}#{para_id}: {style_info}")
+                    
+                    self._apply_paragraph_style(element, style_info)
+                    
+                    # 处理内联元素（runs）
+                    if 'runs' in style_info:
+                        self._apply_inline_styles(element, style_info['runs'])
+            
+            logger.info(f"样式应用完成: {elements_with_id} 个带ID元素, {elements_styled} 个成功应用样式")
+            
+            return str(soup)
+            
+        except Exception as e:
+            # 如果BeautifulSoup处理失败，回退到正则表达式
+            logger.error(f"BeautifulSoup处理失败: {e}")
+            logger.info("回退到正则表达式方式")
+            return self._apply_styles_with_regex(html_content, paragraph_data)
+    
+    def _apply_paragraph_style(self, element, style_info: Dict[str, Any]):
+        """
+        为段落元素应用样式
+        
+        Args:
+            element: BeautifulSoup元素
+            style_info: 样式信息字典
+        """
+        css_styles = []
+        
+        logger.debug(f"应用段落样式: {element.name}#{element.get('id', 'no-id')} -> {style_info}")
+        
+        # 1. 对齐方式
+        alignment = style_info.get('alignment')
+        if alignment:
+            alignment_name = self.alignment_map.get(alignment, 'left')
+            if alignment_name != 'left':  # 只添加非默认的对齐方式
+                css_styles.append(f"text-align: {alignment_name}")
+                logger.debug(f"  对齐方式: {alignment} -> {alignment_name}")
+        
+        # 2. 段落格式
+        paragraph_format = style_info.get('paragraph_format', {})
+        
+        # 缩进
+        if paragraph_format.get('left_indent'):
+            css_styles.append(f"margin-left: {paragraph_format['left_indent']}pt")
+            logger.debug(f"  左缩进: {paragraph_format['left_indent']}pt")
+        
+        if paragraph_format.get('right_indent'):
+            css_styles.append(f"margin-right: {paragraph_format['right_indent']}pt")
+            logger.debug(f"  右缩进: {paragraph_format['right_indent']}pt")
+        
+        if paragraph_format.get('first_line_indent'):
+            css_styles.append(f"text-indent: {paragraph_format['first_line_indent']}pt")
+            logger.debug(f"  首行缩进: {paragraph_format['first_line_indent']}pt")
+        
+        # 段落间距
+        if paragraph_format.get('space_before'):
+            css_styles.append(f"margin-top: {paragraph_format['space_before']}pt")
+            logger.debug(f"  段前间距: {paragraph_format['space_before']}pt")
+        
+        if paragraph_format.get('space_after'):
+            css_styles.append(f"margin-bottom: {paragraph_format['space_after']}pt")
+            logger.debug(f"  段后间距: {paragraph_format['space_after']}pt")
+        
+        # 3. 行间距
+        line_spacing = paragraph_format.get('line_spacing')
+        if line_spacing:
+            if isinstance(line_spacing, (int, float)):
+                css_styles.append(f"line-height: {line_spacing}")
+                logger.debug(f"  行间距: {line_spacing}")
+        
+        # 应用样式到元素
+        if css_styles:
+            self._add_css_styles(element, css_styles)
+            logger.debug(f"  最终CSS样式: {'; '.join(css_styles)}")
+        
+        # 添加样式类名
+        style_name = style_info.get('style_name')
+        if style_name:
+            # 将样式名转换为CSS类名
+            class_name = self._style_name_to_class(style_name)
+            existing_classes = element.get('class', [])
+            if isinstance(existing_classes, str):
+                existing_classes = [existing_classes]
+            
+            if class_name not in existing_classes:
+                existing_classes.append(class_name)
+                element['class'] = existing_classes
+                logger.debug(f"  添加CSS类: {class_name}")
+    
+    def _apply_inline_styles(self, paragraph_element, runs_data: List[Dict[str, Any]]):
+        """
+        应用内联样式到段落中的文本片段
+        
+        Args:
+            paragraph_element: 段落元素
+            runs_data: runs样式数据列表
+        """
+        if not runs_data:
+            return
+        
+        # 获取段落文本
+        para_text = paragraph_element.get_text()
+        if not para_text:
+            return
+        
+        # 构建新的HTML内容，包含内联样式
+        new_html_parts = []
+        current_pos = 0
+        
+        for run_data in runs_data:
+            run_text = run_data.get('text', '')
+            if not run_text:
+                continue
+            
+            # 找到run_text在段落中的位置
+            run_pos = para_text.find(run_text, current_pos)
+            if run_pos == -1:
+                continue
+            
+            # 添加run文本之前的文本
+            if run_pos > current_pos:
+                new_html_parts.append(para_text[current_pos:run_pos])
+            
+            # 添加带样式的run文本
+            styled_run = self._create_styled_run(run_text, run_data)
+            new_html_parts.append(styled_run)
+            
+            current_pos = run_pos + len(run_text)
+        
+        # 添加剩余文本
+        if current_pos < len(para_text):
+            new_html_parts.append(para_text[current_pos:])
+        
+        # 如果有内联样式，替换段落内容
+        if len(new_html_parts) > 1 or any('<' in part for part in new_html_parts):
+            paragraph_element.clear()
+            paragraph_element.append(''.join(new_html_parts))
+    
+    def _create_styled_run(self, text: str, run_data: Dict[str, Any]) -> str:
+        """
+        创建带样式的内联文本
+        
+        Args:
+            text: 文本内容
+            run_data: run样式数据
+            
+        Returns:
+            带样式的HTML字符串
+        """
+        css_styles = []
+        html_tags = []
+        
+        # 加粗
+        if run_data.get('bold'):
+            html_tags.append('strong')
+        
+        # 斜体
+        if run_data.get('italic'):
+            html_tags.append('em')
+        
+        # 下划线
+        if run_data.get('underline'):
+            css_styles.append("text-decoration: underline")
+        
+        # 字体名称
+        font_name = run_data.get('font_name')
+        if font_name:
+            css_styles.append(f"font-family: '{font_name}'")
+        
+        # 字体大小
+        font_size = run_data.get('font_size')
+        if font_size:
+            css_styles.append(f"font-size: {font_size}pt")
+        
+        # 字体颜色
+        font_color = run_data.get('font_color')
+        if font_color and font_color.startswith('#'):
+            css_styles.append(f"color: {font_color}")
+        
+        # 高亮颜色
+        highlight_color = run_data.get('highlight_color')
+        if highlight_color and highlight_color.startswith('#'):
+            css_styles.append(f"background-color: {highlight_color}")
+        
+        # 构建HTML
+        result = text
+        css_style = '; '.join(css_styles)
+        
+        # 先应用字体样式（使用span）
+        if css_style:
+            result = f'<span style="{css_style}">{result}</span>'
+        
+        # 然后应用语义标签
+        for tag in reversed(html_tags):
+            result = f'<{tag}>{result}</{tag}>'
+        
+        return result
+    
+    def _add_css_styles(self, element, css_styles: List[str]):
+        """
+        为元素添加CSS样式
+        
+        Args:
+            element: BeautifulSoup元素
+            css_styles: CSS样式列表
+        """
+        if not css_styles:
+            return
+        
+        existing_style = element.get('style', '')
+        if existing_style and not existing_style.endswith(';'):
+            existing_style += ';'
+        
+        new_styles = '; '.join(css_styles)
+        combined_style = f"{existing_style} {new_styles}".strip()
+        
+        element['style'] = combined_style
+    
+    def _style_name_to_class(self, style_name: Optional[str]) -> str:
+        """
+        将Word样式名转换为CSS类名
+        
+        Args:
+            style_name: Word样式名
+            
+        Returns:
+            CSS类名
+        """
+        if not style_name:
+            return ""
+        
+        # 移除空格和特殊字符，转换为小写
+        class_name = re.sub(r'[^\w]', '-', style_name.lower())
+        return f"word-style-{class_name}"
+    
+    def _apply_styles_with_regex(self, html_content: str, paragraph_data: Dict[str, Any]) -> str:
+        """
+        使用正则表达式应用样式（BeautifulSoup不可用时的备用方案）
+        
+        Args:
+            html_content: 原始HTML内容
+            paragraph_data: 段落样式数据
+            
+        Returns:
+            应用样式后的HTML
+        """
+        logger.info("使用正则表达式方式应用样式")
+        
+        # 简单的正则表达式实现
+        result = html_content
+        
+        # 查找所有段落标签
+        para_pattern = r'<(p|h[1-6])([^>]*)(?:\sid="([^"]+)")?([^>]*)>(.*?)</\1>'
+        
+        matches_count = 0
+        styled_count = 0
+        
+        def replace_para(match):
+            nonlocal matches_count, styled_count
+            matches_count += 1
+            
+            tag = match.group(1)
+            attrs_before = match.group(2) or ''
+            para_id = match.group(3)
+            attrs_after = match.group(4) or ''
+            content = match.group(5)
+            
+            logger.debug(f"正则匹配: {tag}#{para_id}")
+            
+            if para_id and para_id in paragraph_data:
+                styled_count += 1
+                style_info = paragraph_data[para_id]
+                logger.debug(f"  应用样式: {style_info}")
+                
+                # 构建样式
+                css_styles = []
+                
+                # 对齐方式
+                alignment = style_info.get('alignment')
+                if alignment:
+                    alignment_name = self.alignment_map.get(alignment, 'left')
+                    css_styles.append(f"text-align: {alignment_name}")
+                
+                # 组合样式字符串
+                if css_styles:
+                    style_attr = f' style="{"; ".join(css_styles)}"'
+                    logger.debug(f"  生成的样式属性: {style_attr}")
+                else:
+                    style_attr = ''
+                
+                # 重新构建标签
+                return f'<{tag}{attrs_before}{style_attr}{attrs_after}>{content}</{tag}>'
+            
+            return match.group(0)
+        
+        # 应用替换
+        result = re.sub(para_pattern, replace_para, result, flags=re.DOTALL)
+        
+        logger.info(f"正则方式处理完成: {styled_count}/{matches_count} 个段落应用样式")
+        
+        return result
+    
+    def generate_css_rules(self, paragraph_data: Dict[str, Any]) -> str:
+        """
+        生成CSS规则文件
+        
+        Args:
+            paragraph_data: 段落样式数据
+            
+        Returns:
+            CSS规则字符串
+        """
+        css_rules = []
+        
+        # 收集所有样式名称
+        style_classes = set()
+        for style_info in paragraph_data.values():
+            style_name = style_info.get('style_name')
+            if style_name:
+                style_classes.add(self._style_name_to_class(style_name))
+        
+        # 生成CSS规则
+        for class_name in sorted(style_classes):
+            css_rules.append(f".{class_name} {{ margin: 0.5em 0; }}")
+        
+        # 对齐类
+        alignment_classes = [
+            ".align-center { text-align: center; }",
+            ".align-right { text-align: right; }", 
+            ".align-justify { text-align: justify; }",
+            ".align-left { text-align: left; }"
+        ]
+        
+        css_rules.extend(alignment_classes)
+        
+        return "\n".join(css_rules)
+
+
+# 测试函数
+def test_style_applicator():
+    """测试样式应用器"""
+    applicator = ParaIdStyleApplicator()
+    
+    if applicator.bs4_available:
+        print("ParaIdStyleApplicator 已实现")
+        print("功能:")
+        print("- 基于paraId的精确样式匹配")
+        print("- 段落对齐、缩进、间距")
+        print("- 内联文本样式（加粗、斜体、颜色等）")
+        print("- CSS类名生成和样式应用")
+        print("- 正则表达式备用方案")
+    else:
+        print("BeautifulSoup不可用，功能受限")
+
+
+if __name__ == "__main__":
+    test_style_applicator()

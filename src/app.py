@@ -7,6 +7,7 @@ from werkzeug.utils import secure_filename
 import tempfile
 from pathlib import Path
 from converters.document_converter import DocumentConverter
+from src.enhanced_document_converter import EnhancedDocumentConverter
 from src.config import create_config_from_request
 
 # 配置模板目录为项目根目录下的templates文件夹
@@ -23,7 +24,15 @@ os.makedirs(uploads_dir, exist_ok=True)
 os.makedirs(downloads_dir, exist_ok=True)
 os.makedirs(images_dir, exist_ok=True)
 
-converter = DocumentConverter()
+# 创建转换器实例
+try:
+    # 优先使用增强版转换器（支持paraId精确映射）
+    converter = EnhancedDocumentConverter()
+    print("使用增强版转换器（支持paraId精确样式映射）")
+except Exception as e:
+    # 如果增强版初始化失败，回退到原有转换器
+    converter = DocumentConverter()
+    print(f"增强版转换器不可用，使用原有转换器: {str(e)}")
 
 @app.route('/')
 def index():
@@ -161,8 +170,53 @@ def health_check():
     """健康检查"""
     return jsonify({
         'status': 'healthy',
-        'pandoc_available': converter.pandoc_available
+        'pandoc_available': converter.pandoc_available,
+        'enhanced_converter': isinstance(converter, EnhancedDocumentConverter)
     })
+
+@app.route('/api/test-convert', methods=['POST'])
+def test_conversion():
+    """测试增强版转换功能"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        if file.filename is None or file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+        
+        # 保存临时文件
+        filename = secure_filename(file.filename)
+        temp_path = os.path.join(tempfile.gettempdir(), filename)
+        file.save(temp_path)
+        
+        try:
+            # 使用增强版转换器测试
+            if isinstance(converter, EnhancedDocumentConverter):
+                result = converter.test_conversion(temp_path)
+                
+                # 清理临时文件
+                os.unlink(temp_path)
+                
+                return jsonify({
+                    'success': True,
+                    'test_result': result,
+                    'message': '增强版转换器测试完成'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': '增强版转换器不可用'
+                }), 400
+                
+        except Exception as e:
+            # 清理临时文件
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise e
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     # 检查pandoc是否可用

@@ -1,0 +1,350 @@
+"""
+增强版文档转换器 - 集成paraId映射功能
+替换当前的文本匹配逻辑为精确的paraId映射
+"""
+
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Optional, Dict, Any
+import sys
+
+# 添加项目路径
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# 导入现有的模块
+from src.config import ConversionConfig, DEFAULT_CONFIG
+from src.image_downloader import ImageDownloader, process_html_images
+
+# 导入新的paraId模块
+from src.paragraph_id_extractor import ParagraphIdExtractor
+from src.para_id_pandoc_converter import ParaIdPandocConverter
+from src.para_id_style_applicator import ParaIdStyleApplicator
+
+# 保留原有的导入以支持其他格式
+try:
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
+
+try:
+    import pdfplumber
+    PDFPLUMBER_AVAILABLE = True
+except ImportError:
+    PDFPLUMBER_AVAILABLE = False
+
+try:
+    from ebooklib import epub
+    from bs4 import BeautifulSoup
+    EPUBLIB_AVAILABLE = True
+except ImportError:
+    EPUBLIB_AVAILABLE = False
+
+
+class EnhancedDocumentConverter:
+    """增强版文档转换器 - 使用paraId精确映射样式"""
+    
+    def __init__(self, config: Optional[ConversionConfig] = None):
+        # 原有配置
+        self.config = config if config is not None else DEFAULT_CONFIG
+        self.image_downloader = ImageDownloader()
+        
+        # 新的paraId组件
+        self.para_id_extractor = ParagraphIdExtractor()
+        self.pandoc_converter = ParaIdPandocConverter()
+        self.style_applicator = ParaIdStyleApplicator(self.config)
+        
+        # 检查可用性
+        self.pandoc_available = self.pandoc_converter.pandoc_available
+        
+        # 创建图片目录
+        project_root = Path(__file__).parent.parent
+        self.images_dir = project_root / 'uploads' / 'images'
+    
+    def convert_to_html(self, input_file: str, output_file: Optional[str] = None) -> Optional[str]:
+        """
+        增强版文档转换 - 支持paraId精确映射
+        
+        Args:
+            input_file: 输入文件路径
+            output_file: 输出文件路径，如果为None则自动生成
+            
+        Returns:
+            转换后的HTML文件路径，失败返回None
+        """
+        input_path = Path(input_file)
+        if not input_path.exists():
+            raise FileNotFoundError(f"Input file not found: {input_file}")
+        
+        if output_file is None:
+            output_file = str(input_path.with_suffix('.html'))
+        
+        # 检测文件类型并选择合适的转换方法
+        file_type = self._detect_file_type(input_file)
+        
+        if file_type == 'docx':
+            return self._convert_docx_with_para_id(input_file, output_file)
+        elif file_type == 'pdf':
+            return self._convert_pdf_to_html(input_file, output_file)
+        elif file_type == 'epub':
+            return self._convert_epub_to_html(input_file, output_file)
+        else:
+            # 对于其他格式，使用原有的pandoc转换
+            return self._convert_with_pandoc(input_file, output_file)
+    
+    def _detect_file_type(self, file_path: str) -> str:
+        """检测文件类型"""
+        path = Path(file_path)
+        ext = path.suffix.lower()
+        
+        # 首先基于扩展名
+        ext_map = {
+            '.docx': 'docx',
+            '.doc': 'doc',
+            '.pdf': 'pdf',
+            '.epub': 'epub',
+            '.txt': 'plain',
+            '.rtf': 'rtf',
+            '.md': 'markdown',
+            '.html': 'html',
+            '.htm': 'html',
+            '.odt': 'odt'
+        }
+        
+        if ext in ext_map:
+            return ext_map[ext]
+        
+        # 如果扩展名不明确，基于文件头检测
+        try:
+            with open(file_path, 'rb') as f:
+                header = f.read(200)
+                
+                if header.startswith(b'%PDF'):
+                    return 'pdf'
+                elif header.startswith(b'PK\\x03\\x04'):
+                    # ZIP格式，可能是epub或docx
+                    if b'mimetypeapplication/epub+zip' in header:
+                        return 'epub'
+                    elif b'word/' in header or b'docx' in header:
+                        return 'docx'
+                elif header.startswith(b'{\\\\rtf'):
+                    return 'rtf'
+        except Exception:
+            pass
+        
+        return 'plain'  # 默认为纯文本
+    
+    def _convert_docx_with_para_id(self, docx_file: str, output_file: str) -> str:
+        """
+        使用paraId精确映射转换docx文件
+        
+        Args:
+            docx_file: docx文件路径
+            output_file: 输出HTML文件路径
+            
+        Returns:
+            HTML文件路径
+        """
+        try:
+            # 第一步：提取段落样式数据（包含paraId）
+            print(f"提取paraId和样式信息...")
+            paragraph_data = self.para_id_extractor.extract_with_text_fallback(docx_file)
+            print(f"提取到 {len(paragraph_data)} 个段落的样式数据")
+            
+            # 第二步：使用pandoc转换并保留paraId
+            print(f"使用Pandoc转换并保留paraId...")
+            html_with_ids = self.pandoc_converter.convert_with_para_id(docx_file, paragraph_data)
+            print("Pandoc转换完成")
+            
+            # 第三步：根据paraId应用样式
+            print(f"应用样式到HTML段落...")
+            final_html = self.style_applicator.apply_styles_by_para_id(html_with_ids, paragraph_data)
+            
+            # 第四步：添加CSS样式和图片处理
+            enhanced_html = self._enhance_html_with_resources(final_html, paragraph_data)
+            
+            # 第五步：保存结果
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(enhanced_html)
+            
+            print(f"转换完成: {output_file}")
+            return output_file
+            
+        except Exception as e:
+            print(f"paraId转换失败，回退到原有方法: {str(e)}")
+            # 如果paraId方法失败，回退到原有方法
+            return self._convert_with_pandoc(docx_file, output_file)
+    
+    def _enhance_html_with_resources(self, html_content: str, paragraph_data: Dict[str, Any]) -> str:
+        """
+        增强HTML：添加CSS样式和图片处理
+        
+        Args:
+            html_content: 原始HTML内容
+            paragraph_data: 段落样式数据
+            
+        Returns:
+            增强后的HTML
+        """
+        # 处理图片
+        html_content = process_html_images(html_content, self.image_downloader)
+        
+        # 生成CSS样式
+        css_rules = self.style_applicator.generate_css_rules(paragraph_data)
+        
+        # 将CSS插入HTML
+        if '</head>' in html_content:
+            css_block = f"<style>\\n{css_rules}\\n</style>\\n"
+            html_content = html_content.replace('</head>', css_block + '</head>')
+        elif '<head>' in html_content:
+            css_block = f"<style>\\n{css_rules}\\n</style>\\n"
+            html_content = html_content.replace('<head>', '<head>' + css_block)
+        else:
+            # 如果没有head标签，添加到开头
+            css_block = f"<head><style>\\n{css_rules}\\n</style></head>\\n"
+            html_content = css_block + html_content
+        
+        return html_content
+    
+    def _convert_with_pandoc(self, input_file: str, output_file: str) -> str:
+        """
+        使用原有pandoc方法转换文档
+        
+        Args:
+            input_file: 输入文件路径
+            output_file: 输出文件路径
+            
+        Returns:
+            HTML文件路径
+        """
+        if not self.pandoc_available:
+            raise RuntimeError("pandoc is not available")
+        
+        try:
+            # 确定输入格式
+            file_type = self._detect_file_type(input_file)
+            format_map = {
+                'docx': 'docx',
+                'doc': 'doc',
+                'epub': 'epub',
+                'plain': 'plain',
+                'rtf': 'rtf',
+                'markdown': 'markdown',
+                'html': 'html',
+                'odt': 'odt'
+            }
+            
+            input_format = format_map.get(file_type, 'plain')
+            
+            # 执行pandoc转换
+            cmd = [
+                'pandoc', '-f', input_format, '-t', 'html',
+                input_file, '-o', output_file,
+                '--standalone', '--embed-resources',
+                '--wrap=none'
+            ]
+            
+            subprocess.run(cmd, check=True, capture_output=True)
+            return output_file
+            
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Pandoc conversion failed: {e.stderr.decode()}")
+    
+    def _convert_pdf_to_html(self, input_file: str, output_file: str) -> str:
+        """PDF转换（使用原有方法）"""
+        if not PDFPLUMBER_AVAILABLE:
+            raise RuntimeError("pdfplumber is not available for PDF conversion")
+        
+        # 这里可以复用原有的PDF转换逻辑
+        # 为了简化，暂时使用pandoc转换
+        return self._convert_with_pandoc(input_file, output_file)
+    
+    def _convert_epub_to_html(self, input_file: str, output_file: str) -> str:
+        """EPUB转换（使用原有方法）"""
+        if not EPUBLIB_AVAILABLE:
+            # 回退到pandoc转换
+            return self._convert_with_pandoc(input_file, output_file)
+        
+        # 这里可以复用原有的EPUB转换逻辑
+        # 为了简化，暂时使用pandoc转换
+        return self._convert_with_pandoc(input_file, output_file)
+    
+    def get_supported_formats(self) -> list:
+        """获取支持的输入格式"""
+        formats = ['.doc', '.docx', '.epub', '.txt', '.rtf', '.md', '.html', '.htm', '.odt']
+        if PDFPLUMBER_AVAILABLE:
+            formats.append('.pdf')
+        return formats
+    
+    def is_supported(self, file_path: str) -> bool:
+        """检查文件格式是否支持"""
+        return Path(file_path).suffix.lower() in self.get_supported_formats()
+    
+    def test_conversion(self, docx_file: str) -> Dict[str, Any]:
+        """
+        测试转换功能，返回详细的转换信息
+        
+        Args:
+            docx_file: 测试docx文件路径
+            
+        Returns:
+            转换结果信息
+        """
+        if not os.path.exists(docx_file):
+            return {"error": "测试文件不存在"}
+        
+        result = {
+            "file": docx_file,
+            "para_id_extraction": False,
+            "pandoc_conversion": False,
+            "style_application": False,
+            "final_result": False,
+            "error": None
+        }
+        
+        try:
+            # 测试paraId提取
+            paragraph_data = self.para_id_extractor.extract_with_text_fallback(docx_file)
+            result["para_id_extraction"] = True
+            result["paragraphs_extracted"] = len(paragraph_data)
+            
+            # 测试pandoc转换
+            html_with_ids = self.pandoc_converter.convert_with_para_id(docx_file, paragraph_data)
+            result["pandoc_conversion"] = True
+            
+            # 测试样式应用
+            final_html = self.style_applicator.apply_styles_by_para_id(html_with_ids, paragraph_data)
+            result["style_application"] = True
+            
+            result["final_result"] = True
+            result["html_length"] = len(final_html)
+            
+        except Exception as e:
+            result["error"] = str(e)
+        
+        return result
+
+
+# 测试函数
+def test_enhanced_converter():
+    """测试增强版转换器"""
+    converter = EnhancedDocumentConverter()
+    
+    print("EnhancedDocumentConverter 已实现")
+    print("功能:")
+    print("- paraId精确映射样式转换")
+    print("- 文件类型自动检测")
+    print("- 回退机制保证兼容性")
+    print("- 多格式支持")
+    print("- 转换测试和诊断")
+    
+    # 测试支持格式
+    print(f"\\n支持的格式: {converter.get_supported_formats()}")
+    print(f"Pandoc可用: {converter.pandoc_available}")
+
+
+if __name__ == "__main__":
+    test_enhanced_converter()

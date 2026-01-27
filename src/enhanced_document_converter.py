@@ -50,7 +50,12 @@ class EnhancedDocumentConverter:
     def __init__(self, config: Optional[ConversionConfig] = None):
         # 原有配置
         self.config = config if config is not None else DEFAULT_CONFIG
-        self.image_downloader = ImageDownloader()
+        
+        # 创建图片目录并初始化图片下载器
+        project_root = Path(__file__).parent.parent
+        self.images_dir = project_root / 'uploads' / 'images'
+        self.images_dir.mkdir(parents=True, exist_ok=True)
+        self.image_downloader = ImageDownloader(str(self.images_dir))
         
         # 新的paraId组件
         self.para_id_extractor = ParagraphIdExtractor()
@@ -59,10 +64,6 @@ class EnhancedDocumentConverter:
         
         # 检查可用性
         self.pandoc_available = self.pandoc_converter.pandoc_available
-        
-        # 创建图片目录
-        project_root = Path(__file__).parent.parent
-        self.images_dir = project_root / 'uploads' / 'images'
     
     def convert_to_html(self, input_file: str, output_file: Optional[str] = None) -> Optional[str]:
         """
@@ -154,19 +155,23 @@ class EnhancedDocumentConverter:
             paragraph_data = self.para_id_extractor.extract_with_text_fallback(docx_file)
             print(f"提取到 {len(paragraph_data)} 个段落的样式数据")
             
-            # 第二步：使用pandoc转换并保留paraId
+            # 第二步：提取图片
+            print(f"提取文档中的图片...")
+            self._extract_images_from_docx(docx_file)
+            
+            # 第三步：使用pandoc转换并保留paraId
             print(f"使用Pandoc转换并保留paraId...")
             html_with_ids = self.pandoc_converter.convert_with_para_id(docx_file, paragraph_data)
             print("Pandoc转换完成")
             
-            # 第三步：根据paraId应用样式
+            # 第四步：根据paraId应用样式
             print(f"应用样式到HTML段落...")
             final_html = self.style_applicator.apply_styles_by_para_id(html_with_ids, paragraph_data)
             
-            # 第四步：添加CSS样式和图片处理
+            # 第五步：添加CSS样式和图片处理
             enhanced_html = self._enhance_html_with_resources(final_html, paragraph_data)
             
-            # 第五步：保存结果
+            # 第六步：保存结果
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(enhanced_html)
             
@@ -177,6 +182,85 @@ class EnhancedDocumentConverter:
             print(f"paraId转换失败，回退到原有方法: {str(e)}")
             # 如果paraId方法失败，回退到原有方法
             return self._convert_with_pandoc(docx_file, output_file)
+    
+    def _extract_images_from_docx(self, docx_file: str):
+        """
+        从docx文件中提取图片到本地
+        
+        Args:
+            docx_file: docx文件路径
+        """
+        import tempfile
+        import shutil
+        import zipfile
+        from pathlib import Path
+        
+        try:
+            # 方法1：直接从docx zip中提取
+            print("  尝试从docx文件直接提取图片...")
+            
+            # 创建目标目录
+            target_images_dir = Path('uploads/images')
+            target_images_dir.mkdir(parents=True, exist_ok=True)
+            
+            extracted_count = 0
+            with zipfile.ZipFile(docx_file, 'r') as zf:
+                for file_info in zf.infolist():
+                    if file_info.filename.startswith('word/media/') and file_info.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')):
+                        # 提取文件名
+                        filename = Path(file_info.filename).name
+                        
+                        # 提取图片数据
+                        with zf.open(file_info) as source:
+                            target_path = target_images_dir / filename
+                            with open(target_path, 'wb') as target:
+                                shutil.copyfileobj(source, target)
+                            extracted_count += 1
+                            print(f"    提取图片: {filename}")
+            
+            if extracted_count > 0:
+                print(f"  成功提取 {extracted_count} 个图片")
+                return
+            
+            # 方法2：使用pandoc --extract-media
+            print("  尝试使用Pandoc提取图片...")
+            
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # 使用pandoc提取media
+                cmd = [
+                    'pandoc', '-f', 'docx', '-t', 'html',
+                    '--extract-media=temp_media',
+                    '--standalone',
+                    docx_file
+                ]
+                
+                # 在临时目录中运行
+                original_cwd = os.getcwd()
+                os.chdir(temp_dir)
+                
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
+                    
+                    # 检查是否创建了media目录
+                    media_dir = Path(temp_dir) / 'temp_media'
+                    if media_dir.exists():
+                        copied_count = 0
+                        for img_file in media_dir.rglob('*'):
+                            if img_file.is_file() and img_file.suffix.lower() in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']:
+                                target_path = target_images_dir / img_file.name
+                                shutil.copy2(img_file, target_path)
+                                copied_count += 1
+                                print(f"    复制图片: {img_file.name}")
+                        
+                        if copied_count > 0:
+                            print(f"  成功复制 {copied_count} 个图片")
+                    
+                finally:
+                    os.chdir(original_cwd)
+                    
+        except Exception as e:
+            print(f"  图片提取失败: {e}")
+            # 不阻止转换流程，只记录警告
     
     def _enhance_html_with_resources(self, html_content: str, paragraph_data: Dict[str, Any]) -> str:
         """
@@ -326,6 +410,85 @@ class EnhancedDocumentConverter:
             result["error"] = str(e)
         
         return result
+    
+    def _extract_images_from_docx(self, docx_file: str):
+        """
+        从docx文件中提取图片到本地
+        
+        Args:
+            docx_file: docx文件路径
+        """
+        import tempfile
+        import shutil
+        import zipfile
+        from pathlib import Path
+        
+        try:
+            # 方法1：直接从docx zip中提取
+            print("  尝试从docx文件直接提取图片...")
+            
+            # 创建目标目录
+            target_images_dir = Path('uploads/images')
+            target_images_dir.mkdir(parents=True, exist_ok=True)
+            
+            extracted_count = 0
+            with zipfile.ZipFile(docx_file, 'r') as zf:
+                for file_info in zf.infolist():
+                    if file_info.filename.startswith('word/media/') and file_info.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')):
+                        # 提取文件名
+                        filename = Path(file_info.filename).name
+                        
+                        # 提取图片数据
+                        with zf.open(file_info) as source:
+                            target_path = target_images_dir / filename
+                            with open(target_path, 'wb') as target:
+                                shutil.copyfileobj(source, target)
+                            extracted_count += 1
+                            print(f"    提取图片: {filename}")
+            
+            if extracted_count > 0:
+                print(f"  成功提取 {extracted_count} 个图片")
+                return
+            
+            # 方法2：使用pandoc --extract-media
+            print("  尝试使用Pandoc提取图片...")
+            
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # 使用pandoc提取media
+                cmd = [
+                    'pandoc', '-f', 'docx', '-t', 'html',
+                    '--extract-media=temp_media',
+                    '--standalone',
+                    docx_file
+                ]
+                
+                # 在临时目录中运行
+                original_cwd = os.getcwd()
+                os.chdir(temp_dir)
+                
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
+                    
+                    # 检查是否创建了media目录
+                    media_dir = Path(temp_dir) / 'temp_media'
+                    if media_dir.exists():
+                        copied_count = 0
+                        for img_file in media_dir.rglob('*'):
+                            if img_file.is_file() and img_file.suffix.lower() in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']:
+                                target_path = target_images_dir / img_file.name
+                                shutil.copy2(img_file, target_path)
+                                copied_count += 1
+                                print(f"    复制图片: {img_file.name}")
+                        
+                        if copied_count > 0:
+                            print(f"  成功复制 {copied_count} 个图片")
+                    
+                finally:
+                    os.chdir(original_cwd)
+                    
+        except Exception as e:
+            print(f"  图片提取失败: {e}")
+            # 不阻止转换流程，只记录警告
 
 
 # 测试函数

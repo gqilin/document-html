@@ -2,6 +2,7 @@ import os
 import hashlib
 import requests
 import urllib.parse
+import shutil
 from pathlib import Path
 from typing import Optional, Dict, Tuple
 import base64
@@ -196,6 +197,42 @@ class ImageDownloader:
         except Exception:
             return None
     
+    def handle_pandoc_image(self, img_path: str) -> Optional[str]:
+        """
+        处理Pandoc生成的本地图片路径
+        
+        Args:
+            img_path: Pandoc生成的图片路径（如 media/image1.png）
+            
+        Returns:
+            本地文件路径，如果图片不存在返回None
+        """
+        try:
+            # 如果图片已经被提取到uploads/images目录，直接返回
+            if img_path.startswith('media/'):
+                filename = img_path.replace('media/', '')
+                target_path = self.images_dir / filename
+                
+                if target_path.exists():
+                    print(f"找到已提取的图片: {target_path}")
+                    return str(target_path)
+                else:
+                    # 尝试在当前目录下查找
+                    current_dir = Path('.')
+                    potential_path = current_dir / img_path
+                    if potential_path.exists():
+                        # 复制到images目录
+                        shutil.copy2(potential_path, target_path)
+                        print(f"复制图片到images目录: {potential_path} -> {target_path}")
+                        return str(target_path)
+            
+            # 其他情况返回None
+            return None
+            
+        except Exception as e:
+            print(f"处理Pandoc图片时出错: {e}")
+            return None
+    
     def get_relative_path(self, local_path: str, base_dir: str = None) -> str:
         """
         获取相对路径，使用../uploads/images前缀
@@ -277,6 +314,7 @@ class ImageDownloader:
 def process_html_images(html_content: str, downloader: ImageDownloader, base_path: str = None) -> str:
     """
     处理HTML中的图片标签，将网络图片下载到本地并更新路径
+    现在也处理Pandoc生成的本地图片路径
     
     Args:
         html_content: HTML内容
@@ -302,6 +340,10 @@ def process_html_images(html_content: str, downloader: ImageDownloader, base_pat
         # 处理base64图片
         elif img_src.startswith('data:image/'):
             local_path = downloader.save_from_base64(img_src)
+        
+        # 处理Pandoc生成的本地图片路径 (如 media/image1.png)
+        elif img_src.startswith('media/') or (not img_src.startswith(('http://', 'https://', 'data:', '#', 'mailto:'))):
+            local_path = downloader.handle_pandoc_image(img_src)
         
         # 更新HTML中的图片路径
         if local_path:

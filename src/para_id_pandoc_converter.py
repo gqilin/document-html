@@ -70,7 +70,11 @@ class ParaIdPandocConverter:
         return html_content
     
     def _docx_to_json(self, docx_file: str) -> Dict[str, Any]:
-        """将Word文档转换为Pandoc JSON格式"""
+        """将Word文档转换为Pandoc JSON格式，同时提取图片"""
+        # 第一步：先提取图片
+        self._extract_images_from_docx(docx_file)
+        
+        # 第二步：转换为JSON
         cmd = [
             'pandoc', '-f', 'docx', '-t', 'json',
             '--wrap=none',
@@ -352,6 +356,69 @@ class ParaIdPandocConverter:
         
         return intersection / union if union > 0 else 0.0
     
+    def _extract_images_from_docx(self, docx_file: str):
+        """
+        从docx文件中提取图片到本地
+        
+        Args:
+            docx_file: docx文件路径
+        """
+        import tempfile
+        import shutil
+        from pathlib import Path
+        
+        try:
+            # 创建临时目录
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # 使用pandoc提取media
+                cmd = [
+                    'pandoc', '-f', 'docx', '-t', 'html',
+                    '--extract-media=temp_media',
+                    '--standalone',
+                    docx_file
+                ]
+                
+                # 在临时目录中运行
+                original_cwd = os.getcwd()
+                os.chdir(temp_dir)
+                
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
+                    
+                    # 检查是否创建了media目录
+                    media_dir = Path(temp_dir) / 'temp_media'
+                    if media_dir.exists():
+                        logger.info(f"找到media目录: {media_dir}")
+                        
+                        # 复制图片到项目images目录
+                        project_root = Path(__file__).parent.parent
+                        target_images_dir = project_root / 'uploads' / 'images'
+                        target_images_dir.mkdir(parents=True, exist_ok=True)
+                        
+                        copied_count = 0
+                        for img_file in media_dir.rglob('*'):
+                            if img_file.is_file() and img_file.suffix.lower() in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']:
+                                target_path = target_images_dir / img_file.name
+                                shutil.copy2(img_file, target_path)
+                                copied_count += 1
+                                logger.debug(f"复制图片: {img_file.name} -> {target_path}")
+                        
+                        logger.info(f"成功复制 {copied_count} 个图片到 uploads/images/")
+                        
+                        # 如果有HTML输出，检查其中的图片引用
+                        if result.stdout and 'src=' in result.stdout:
+                            logger.debug("HTML输出包含图片引用")
+                            # 可以进一步处理HTML中的图片路径
+                    else:
+                        logger.debug("未找到media目录")
+                        
+                finally:
+                    os.chdir(original_cwd)
+                    
+        except Exception as e:
+            logger.warning(f"图片提取失败: {e}")
+            # 不阻止转换流程，只记录警告
+    
     def _json_to_html(self, doc_json: Dict[str, Any]) -> str:
         """将Pandoc JSON转换为HTML"""
         cmd = ['pandoc', '-f', 'json', '-t', 'html', '--standalone', '--wrap=none']
@@ -524,6 +591,69 @@ class ParaIdPandocConverter:
         
         result = re.sub(pattern, replace_func, result, flags=re.DOTALL)
         return result
+    
+    def _extract_images_from_docx(self, docx_file: str):
+        """
+        从docx文件中提取图片到本地
+        
+        Args:
+            docx_file: docx文件路径
+        """
+        import tempfile
+        import shutil
+        from pathlib import Path
+        
+        try:
+            # 创建临时目录
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # 使用pandoc提取media
+                cmd = [
+                    'pandoc', '-f', 'docx', '-t', 'html',
+                    '--extract-media=temp_media',
+                    '--standalone',
+                    docx_file
+                ]
+                
+                # 在临时目录中运行
+                original_cwd = os.getcwd()
+                os.chdir(temp_dir)
+                
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
+                    
+                    # 检查是否创建了media目录
+                    media_dir = Path(temp_dir) / 'temp_media'
+                    if media_dir.exists():
+                        logger.info(f"找到media目录: {media_dir}")
+                        
+                        # 复制图片到项目images目录
+                        project_root = Path(__file__).parent.parent
+                        target_images_dir = project_root / 'uploads' / 'images'
+                        target_images_dir.mkdir(parents=True, exist_ok=True)
+                        
+                        copied_count = 0
+                        for img_file in media_dir.rglob('*'):
+                            if img_file.is_file() and img_file.suffix.lower() in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']:
+                                target_path = target_images_dir / img_file.name
+                                shutil.copy2(img_file, target_path)
+                                copied_count += 1
+                                logger.debug(f"复制图片: {img_file.name} -> {target_path}")
+                        
+                        logger.info(f"成功复制 {copied_count} 个图片到 uploads/images/")
+                        
+                        # 如果有HTML输出，检查其中的图片引用
+                        if result.stdout and 'src=' in result.stdout:
+                            logger.debug("HTML输出包含图片引用")
+                            # 可以进一步处理HTML中的图片路径
+                    else:
+                        logger.debug("未找到media目录")
+                        
+                finally:
+                    os.chdir(original_cwd)
+                    
+        except Exception as e:
+            logger.warning(f"图片提取失败: {e}")
+            # 不阻止转换流程，只记录警告
 
 
 # 测试函数

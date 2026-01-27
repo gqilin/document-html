@@ -41,6 +41,19 @@ class ParagraphIdExtractor:
         # 遍历所有段落
         for para in doc.paragraphs:
             para_id = self._get_paragraph_id(para)
+            
+            # 如果没有paraId，但有特殊内容需要处理，强制生成ID
+            if not para_id:
+                # 1. 包含图片的段落
+                if self._paragraph_contains_image(para):
+                    para_id = f"hash_img_{hash(str(para._element.xml)) % 1000000:06d}"
+                # 2. 有对齐设置的段落（如图片标题）
+                elif para.alignment is not None:
+                    para_id = f"hash_align_{hash(str(para._element.xml)) % 1000000:06d}"
+                # 3. 有特殊样式名的段落
+                elif para.style and para.style.name:
+                    para_id = f"hash_style_{hash(str(para._element.xml)) % 1000000:06d}"
+            
             if para_id:
                 paragraph_data[para_id] = {
                     'text': para.text,
@@ -79,6 +92,44 @@ class ParagraphIdExtractor:
             return None
     
     def _extract_runs_data(self, para) -> list:
+        """提取段落中文本片段的样式信息"""
+        runs_data = []
+        
+        try:
+            for i, run in enumerate(para.runs):
+                run_data = {
+                    'id': f"{self._get_paragraph_id(para)}_run_{i}",
+                    'text': run.text,
+                    'bold': run.bold,
+                    'italic': run.italic,
+                    'underline': run.underline,
+                    'font_name': run.font.name,
+                    'font_size': run.font.size.pt if run.font.size else None,
+                    'font_color': self._get_color_hex(run.font.color) if run.font.color else None,
+                    'highlight_color': self._get_color_hex(run.font.highlight) if run.font.highlight else None
+                }
+                runs_data.append(run_data)
+                
+        except Exception:
+            pass
+        
+        return runs_data
+    
+    def _paragraph_contains_image(self, para) -> bool:
+        """
+        检查段落是否包含图片
+        
+        Args:
+            para: python-docx段落对象
+            
+        Returns:
+            如果包含图片返回True
+        """
+        try:
+            xml = para._element.xml
+            return any(keyword in xml.lower() for keyword in ['graphic', 'blip', 'a:blip', 'pic:pic'])
+        except Exception:
+            return False
         """提取段落中文本片段的样式信息"""
         runs_data = []
         

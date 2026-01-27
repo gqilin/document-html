@@ -262,6 +262,104 @@ class EnhancedDocumentConverter:
             print(f"  图片提取失败: {e}")
             # 不阻止转换流程，只记录警告
     
+    def _wrap_images_with_paragraphs(self, html_content: str, paragraph_data: Dict[str, Any]) -> str:
+        """
+        为独立的图片标签添加包装段落，应用对齐样式
+        
+        Args:
+            html_content: HTML内容
+            paragraph_data: 段落样式数据
+            
+        Returns:
+            处理后的HTML内容
+        """
+        import re
+        
+        # 找到图片段落（空文本但有对齐设置）
+        image_paragraphs = []
+        for para_id, data in paragraph_data.items():
+            text = data.get('text', '')
+            alignment = data.get('alignment')
+            
+            if text.strip() == '' and alignment is not None:
+                image_paragraphs.append((para_id, alignment))
+        
+        if not image_paragraphs:
+            return html_content
+        
+        print(f"  为 {len(image_paragraphs)} 个图片段落添加包装...")
+        
+        # 创建段落ID到对齐的映射
+        alignment_map = {para_id: alignment for para_id, alignment in image_paragraphs}
+        
+        # 查找独立的图片标签并包装
+        def wrap_images(match):
+            img_tag = match.group(0)
+            
+            # 尝试查找最近的未使用的图片段落样式
+            for para_id, alignment in image_paragraphs:
+                if para_id in alignment_map:
+                    # 生成CSS样式
+                    from src.para_id_style_applicator import ParaIdStyleApplicator
+                    applicator = ParaIdStyleApplicator()
+                    
+                    # 转换对齐方式
+                    alignment_name = applicator.alignment_map.get(alignment, 'left')
+                    
+                    # 添加样式和ID
+                    wrapped_img = f'<p id="{para_id}" class="word-style-image-paragraph" style="text-align: {alignment_name}">{img_tag}</p>'
+                    
+                    # 从映射中移除已使用的段落
+                    del alignment_map[para_id]
+                    
+                    print(f"    为图片添加包装: {para_id} -> {alignment_name}")
+                    return wrapped_img
+            
+            # 如果没有找到匹配的段落，返回原标签
+            return img_tag
+        
+        # 查找独立的图片标签（不在p标签内的）
+        # 简化方法：先查找所有img标签，然后检查是否在p标签内
+        img_matches = list(re.finditer(r'<img[^>]+>', html_content))
+        processed_html = html_content
+        
+        # 查找只包含图片的段落（<p><img /></p>格式）
+        simple_img_pattern = r'<p>\s*<img[^>]+>\s*</p>'
+        img_para_matches = list(re.finditer(simple_img_pattern, processed_html))
+        
+        # 从后往前处理，避免位置偏移
+        for match in reversed(img_para_matches):
+            full_match = match.group()
+            
+            # 提取其中的img标签
+            img_match = re.search(r'<img[^>]+>', full_match)
+            if not img_match:
+                continue
+                
+            img_tag = img_match.group()
+            
+            # 这是纯图片段落，需要添加对齐样式
+            for para_id, alignment in image_paragraphs:
+                if para_id in alignment_map:
+                    # 转换对齐方式
+                    alignment_name = self.style_applicator.alignment_map.get(alignment, 'left')
+                    
+                    # 添加样式和ID
+                    wrapped_img = f'<p id="{para_id}" class="word-style-image-paragraph" style="text-align: {alignment_name}">{img_tag}</p>'
+                    
+                    # 替换整个匹配的段落
+                    start_pos = match.start()
+                    end_pos = match.end()
+                    processed_html = processed_html[:start_pos] + wrapped_img + processed_html[end_pos:]
+                    
+                    # 从映射中移除已使用的段落
+                    del alignment_map[para_id]
+                    
+                    print(f"    为图片段落添加样式: {para_id} -> {alignment_name}")
+                    break
+        
+        return processed_html
+    
     def _enhance_html_with_resources(self, html_content: str, paragraph_data: Dict[str, Any]) -> str:
         """
         增强HTML：添加CSS样式和图片处理
@@ -273,8 +371,11 @@ class EnhancedDocumentConverter:
         Returns:
             增强后的HTML
         """
-        # 处理图片
+        # 处理图片路径
         html_content = process_html_images(html_content, self.image_downloader)
+        
+        # 为独立图片添加包装段落和样式
+        html_content = self._wrap_images_with_paragraphs(html_content, paragraph_data)
         
         # 生成CSS样式
         css_rules = self.style_applicator.generate_css_rules(paragraph_data)

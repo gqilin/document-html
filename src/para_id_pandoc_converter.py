@@ -501,6 +501,9 @@ class ParaIdPandocConverter:
         
         logger.info("开始HTML后处理添加ID")
         
+        # 首先处理mark标签 - 将mark标签转换为span标签
+        html_content = self._convert_mark_to_span(html_content)
+        
         if not 'BS4_AVAILABLE' in globals() or not BS4_AVAILABLE or BeautifulSoup is None:
             logger.warning("BeautifulSoup不可用，使用正则表达式方法")
             return self._add_ids_with_regex(html_content, paragraph_data)
@@ -544,6 +547,85 @@ class ParaIdPandocConverter:
         except Exception as e:
             logger.error(f"BeautifulSoup处理失败: {e}")
             return self._add_ids_with_regex(html_content, paragraph_data)
+    
+    def _convert_mark_to_span(self, html_content: str) -> str:
+        """
+        将HTML中的mark标签转换为span标签，保留背景色样式
+        如果父元素（如p标签）已有背景色，则不添加默认黄色背景
+        
+        Args:
+            html_content: 原始HTML内容
+            
+        Returns:
+            转换后的HTML内容
+        """
+        import re
+        
+        logger.info("开始转换mark标签为span标签")
+        
+        # 首先检查父元素是否有背景色
+        # 匹配 <p ... style="...background-color...">...<mark>...</mark>...</p>
+        def should_skip_default_bg(mark_match, html_content):
+            """检查mark标签的父元素是否已有背景色"""
+            mark_start = mark_match.start()
+            # 向前查找最近的p标签开始
+            text_before = html_content[:mark_start]
+            
+            # 查找最近的 <p ...> 标签
+            p_match = None
+            for match in re.finditer(r'<p[^>]*>', text_before, re.IGNORECASE):
+                p_match = match
+            
+            if p_match:
+                p_tag = p_match.group(0)
+                # 检查p标签是否有background-color样式
+                p_style_match = re.search(r'style=["\']([^"\']*)["\']', p_tag, re.IGNORECASE)
+                if p_style_match:
+                    p_style = p_style_match.group(1)
+                    if 'background-color' in p_style.lower():
+                        return True
+            
+            return False
+        
+        # 使用正则表达式替换mark标签
+        def replace_mark_tag(match, html_content=html_content):
+            """替换mark开始标签为span标签，添加背景色样式"""
+            tag_content = match.group(0)
+            
+            # 检查是否已有style属性
+            if 'style=' in tag_content:
+                # 如果已有style属性，检查是否需要添加background-color
+                # 匹配style="..."
+                style_match = re.search(r'style=["\']([^"\']*)["\']', tag_content)
+                if style_match:
+                    existing_style = style_match.group(1)
+                    # 如果已经有background-color，则不添加；否则也不添加默认黄色背景
+                    # mark标签由Pandoc生成，只有当原文有高亮时才应该保留
+                    # 如果mark标签本身没有background-color，说明原文没有设置高亮
+                    return tag_content.replace('<mark', '<span').replace('<MARK', '<span')
+            
+            # 没有style属性，检查父元素是否有背景色
+            if should_skip_default_bg(match, html_content):
+                # 父元素有背景色，不添加默认背景色
+                return '<span>'
+            
+            # 没有style属性且父元素没有背景色，不添加默认背景色
+            # mark标签由Pandoc生成，表示Word中的高亮，但如果父元素没有背景色
+            # 说明原文没有设置高亮，只是Pandoc的默认行为，不应添加黄色背景
+            return '<span>'
+        
+        # 替换mark开始标签
+        result = re.sub(r'<mark[^>]*>', lambda m: replace_mark_tag(m, html_content), html_content, flags=re.IGNORECASE)
+        
+        # 替换mark结束标签
+        result = re.sub(r'</mark>', '</span>', result, flags=re.IGNORECASE)
+        result = re.sub(r'</MARK>', '</span>', result, flags=re.IGNORECASE)
+        
+        # 统计替换数量
+        mark_count = html_content.lower().count('<mark')
+        logger.info(f"转换完成，替换了 {mark_count} 个mark标签")
+        
+        return result
     
     def _add_ids_with_regex(self, html_content: str, paragraph_data: Dict[str, Any]) -> str:
         """

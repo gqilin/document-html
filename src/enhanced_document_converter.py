@@ -474,13 +474,57 @@ class EnhancedDocumentConverter:
             raise RuntimeError(f"Pandoc conversion failed: {e.stderr.decode()}")
     
     def _convert_pdf_to_html(self, input_file: str, output_file: str) -> str:
-        """PDF转换（使用原有方法）"""
+        """PDF转换（使用pdfplumber提取文本）"""
         if not PDFPLUMBER_AVAILABLE:
             raise RuntimeError("pdfplumber is not available for PDF conversion")
         
-        # 这里可以复用原有的PDF转换逻辑
-        # 为了简化，暂时使用pandoc转换
-        return self._convert_with_pandoc(input_file, output_file)
+        import pdfplumber
+        from html import escape
+        
+        try:
+            html_parts = []
+            html_parts.append('<!DOCTYPE html>')
+            html_parts.append('<html>')
+            html_parts.append('<head>')
+            html_parts.append('<meta charset="UTF-8">')
+            html_parts.append('<title>PDF Conversion</title>')
+            html_parts.append('<style>')
+            html_parts.append('body { font-family: Arial, sans-serif; line-height: 1.6; margin: 40px; }')
+            html_parts.append('p { margin: 0.5em 0; }')
+            html_parts.append('</style>')
+            html_parts.append('</head>')
+            html_parts.append('<body>')
+            
+            with pdfplumber.open(input_file) as pdf:
+                for page_num, page in enumerate(pdf.pages, 1):
+                    # 提取页面文本
+                    text = page.extract_text()
+                    if text:
+                        # 将文本按段落分割
+                        paragraphs = text.split('\n')
+                        for para in paragraphs:
+                            para = para.strip()
+                            if para:
+                                # 转义HTML特殊字符
+                                escaped_para = escape(para)
+                                html_parts.append(f'<p>{escaped_para}</p>')
+                    
+                    # 添加分页标记（可选）
+                    if page_num < len(pdf.pages):
+                        html_parts.append('<hr style="page-break-after: always;" />')
+            
+            html_parts.append('</body>')
+            html_parts.append('</html>')
+            
+            # 写入输出文件
+            html_content = '\n'.join(html_parts)
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            
+            return output_file
+            
+        except Exception as e:
+            raise RuntimeError(f"PDF conversion failed: {str(e)}")
     
     def _convert_epub_to_html(self, input_file: str, output_file: str) -> str:
         """EPUB转换（使用pandoc直接指定epub格式）"""

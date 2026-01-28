@@ -12,6 +12,8 @@ import io
 from html import escape
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
+from PIL import Image as PILImage
+import hashlib
 
 # 导入文本标准化器
 try:
@@ -57,6 +59,16 @@ class ImprovedPDFConverter:
         self.image_min_size = 100  # 图片最小尺寸（像素）
         self.image_min_bytes = 1024  # 图片最小字节数
         
+        # 装饰性图片过滤设置
+        self.filter_decorative_images = True  # 是否过滤装饰性图片
+        self.decorative_max_size = 50  # 装饰性图片最大尺寸（像素）
+        self.decorative_max_bytes = 20480  # 装饰性图片最大字节数（20KB）
+        self.min_image_width = 80  # 正文图片最小宽度
+        self.min_image_height = 80  # 正文图片最小高度
+        self.min_aspect_ratio = 0.2  # 最小宽高比
+        self.max_aspect_ratio = 5.0  # 最大宽高比
+        self.seen_image_hashes = set()  # 用于去重
+        
         # 初始化图片下载器
         if images_dir:
             self.images_dir = Path(images_dir)
@@ -74,6 +86,10 @@ class ImprovedPDFConverter:
         
         # 记录提取的图片
         self.extracted_images = []
+        self.skipped_images = []  # 记录被过滤的图片
+        
+        # 重置图片hash集合
+        self.reset_image_filter()
         
     def convert_to_html(self, pdf_path: str, output_path: Optional[str] = None) -> str:
         """
@@ -97,6 +113,11 @@ class ImprovedPDFConverter:
         
         # 打开PDF
         doc = fitz.open(str(pdf_path))
+        
+        # 重置图片过滤状态
+        self.reset_image_filter()
+        self.extracted_images = []
+        self.skipped_images = []
         
         # 构建HTML
         html_parts = []
@@ -535,7 +556,7 @@ class ImprovedPDFConverter:
     
     def _extract_page_images(self, page: fitz.Page, page_num: int) -> List[Dict[str, Any]]:
         """
-        提取页面中的图片
+        提取页面中的图片，并过滤装饰性图片
         
         Args:
             page: PDF页面
@@ -560,9 +581,23 @@ class ImprovedPDFConverter:
                 image_bytes = base_image["image"]
                 image_ext = base_image["ext"]
                 
-                # 过滤太小的图片
+                # 过滤太小的图片（字节数）
                 if len(image_bytes) < self.image_min_bytes:
                     continue
+                
+                # 获取图片在页面上的位置
+                img_rect = self._get_image_rect(page, xref)
+                width = img_rect[2] - img_rect[0] if img_rect else 0
+                height = img_rect[3] - img_rect[1] if img_rect else 0
+                
+                # 过滤装饰性图片
+                if self.filter_decorative_images:
+                    is_decorative, reason = self._is_decorative_image(
+                        image_bytes, width, height
+                    )
+                    if is_decorative:
+                        print(f"  跳过装饰性图片: page{page_num + 1}_img{img_index + 1} - {reason}")
+                        continue
                 
                 # 生成文件名
                 filename = f"pdf_page{page_num + 1}_img{img_index + 1}.{image_ext}"
@@ -571,9 +606,6 @@ class ImprovedPDFConverter:
                 # 保存图片
                 with open(file_path, 'wb') as f:
                     f.write(image_bytes)
-                
-                # 获取图片在页面上的位置
-                img_rect = self._get_image_rect(page, xref)
                 
                 image_info = {
                     'filename': filename,
@@ -585,14 +617,14 @@ class ImprovedPDFConverter:
                     'ext': image_ext,
                     'y0': img_rect[1] if img_rect else 0,
                     'x0': img_rect[0] if img_rect else 0,
-                    'width': img_rect[2] - img_rect[0] if img_rect else 0,
-                    'height': img_rect[3] - img_rect[1] if img_rect else 0
+                    'width': width,
+                    'height': height
                 }
                 
                 images.append(image_info)
                 self.extracted_images.append(image_info)
                 
-                print(f"  提取图片: {filename} ({len(image_bytes)} bytes)")
+                print(f"  提取图片: {filename} ({len(image_bytes)} bytes, {int(width)}x{int(height)})")
                 
         except Exception as e:
             print(f"  提取图片时出错: {e}")
@@ -601,6 +633,94 @@ class ImprovedPDFConverter:
         images.sort(key=lambda x: x['y0'])
         
         return images
+    
+    def _is_decorative_image(self, image_bytes: bytes, width: float, height: float) -> Tuple[bool, str]:
+        """
+        判断图片是否为装饰性图片
+        
+        装饰性图片特征：
+        1. 尺寸过小（如页眉页脚的分隔线、小图标）
+        2. 极端的宽高比（如细长的分隔线）
+        3. 文件过小（简单的图形）
+        4. 纯色或简单图案（通过颜色数量判断）
+        
+        Args:
+            image_bytes: 图片字节数据
+            width: 图片宽度
+            height: 图片高度
+            
+        Returns:
+            (是否为装饰性图片, 原因)
+        """
+        # 1. 检查尺寸 - 太小的图片可能是装饰性的
+        if width < self.min_image_width or height < self.min_image_height:
+            return True, f"尺寸过小 ({int(width)}x{int(height)})"
+        
+        # 2. 检查文件大小 - 太小的文件可能是简单图形
+        if len(image_bytes) < self.decorative_max_bytes:
+            # 小文件需要进一步检查宽高比
+            pass
+        
+        # 3. 检查宽高比 - 极端比例可能是分隔线
+        if width > 0 and height > 0:
+            aspect_ratio = width / height
+            if aspect_ratio < self.min_aspect_ratio:
+                return True, f"宽高比过小 ({aspect_ratio:.2f})"
+            if aspect_ratio > self.max_aspect_ratio:
+                return True, f"宽高比过大 ({aspect_ratio:.2f})"
+        
+        # 4. 检查图片内容复杂度（使用PIL）
+        try:
+            from PIL import Image as PILImage
+            import io
+            
+            img = PILImage.open(io.BytesIO(image_bytes))
+            
+            # 获取图片实际尺寸
+            img_width, img_height = img.size
+            
+            # 如果实际像素尺寸很小
+            if img_width < 50 or img_height < 50:
+                return True, f"像素尺寸过小 ({img_width}x{img_height})"
+            
+            # 检查颜色数量 - 装饰性图片通常颜色很少
+            if img.mode in ('RGB', 'RGBA', 'L'):
+                # 转换为RGB模式统计颜色
+                rgb_img = img.convert('RGB')
+                # 缩小图片以加快统计
+                small_img = rgb_img.resize((100, 100))
+                colors = small_img.getcolors(maxcolors=256)
+                
+                if colors and len(colors) < 10:
+                    return True, f"颜色数量过少 ({len(colors)}种颜色)"
+            
+            # 检查是否为纯色或接近纯色
+            if img.mode == 'L' or img.mode == '1':
+                # 灰度图或二值图可能是线条
+                extrema = img.getextrema()
+                if isinstance(extrema, tuple):
+                    min_val, max_val = extrema
+                    if max_val - min_val < 20:  # 颜色变化很小
+                        return True, "接近纯色"
+                
+        except Exception as e:
+            # PIL检查失败，继续保留图片
+            pass
+        
+        # 5. 检查图片hash去重
+        try:
+            image_hash = hashlib.md5(image_bytes).hexdigest()
+            if image_hash in self.seen_image_hashes:
+                return True, "重复图片"
+            self.seen_image_hashes.add(image_hash)
+        except Exception:
+            pass
+        
+        return False, ""
+    
+    def reset_image_filter(self):
+        """重置图片过滤状态（用于新的PDF转换）"""
+        self.seen_image_hashes.clear()
     
     def _get_image_rect(self, page: fitz.Page, xref: int) -> Optional[Tuple[float, float, float, float]]:
         """

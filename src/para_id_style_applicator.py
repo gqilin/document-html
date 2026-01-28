@@ -188,6 +188,8 @@ class ParaIdStyleApplicator:
     def _apply_inline_styles(self, paragraph_element, runs_data: List[Dict[str, Any]]):
         """
         应用内联样式到段落中的文本片段
+        智能判断：如果所有run的样式一致，则将样式应用到段落级别
+        如果样式不一致，则只对不同样式的文本应用span标签
         
         Args:
             paragraph_element: 段落元素
@@ -196,13 +198,128 @@ class ParaIdStyleApplicator:
         if not runs_data:
             return
         
-        # 获取段落HTML内容（保持原始格式）
+        # 获取段落纯文本内容
+        para_text = paragraph_element.get_text()
+        if not para_text.strip():
+            return
+        
+        # 过滤掉空文本的runs
+        valid_runs = [r for r in runs_data if r.get('text', '').strip()]
+        if not valid_runs:
+            return
+        
+        # 检查是否所有run的字体样式都一致
+        all_same_style = self._check_all_runs_same_style(valid_runs)
+        
+        if all_same_style and len(valid_runs) > 0:
+            # 所有run样式一致，将样式应用到段落级别
+            logger.debug(f"  检测到段落级统一样式，应用到p标签")
+            self._apply_uniform_style_to_paragraph(paragraph_element, valid_runs[0])
+            return
+        
+        # 样式不一致，需要对不同样式的文本应用span标签
+        logger.debug(f"  检测到混合样式，应用内联span标签")
+        self._apply_mixed_inline_styles(paragraph_element, valid_runs)
+    
+    def _check_all_runs_same_style(self, runs_data: List[Dict[str, Any]]) -> bool:
+        """
+        检查所有run的字体样式是否完全一致
+        
+        Args:
+            runs_data: runs样式数据列表
+            
+        Returns:
+            如果所有run样式一致返回True
+        """
+        if len(runs_data) <= 1:
+            return True
+        
+        # 获取第一个run的样式作为基准
+        first_run = runs_data[0]
+        style_keys = ['bold', 'italic', 'underline', 'font_name', 'font_size', 'font_color', 'highlight_color']
+        
+        for run in runs_data[1:]:
+            for key in style_keys:
+                if first_run.get(key) != run.get(key):
+                    return False
+        
+        return True
+    
+    def _apply_uniform_style_to_paragraph(self, paragraph_element, run_data: Dict[str, Any]):
+        """
+        将统一样式应用到段落级别（p标签）
+        
+        Args:
+            paragraph_element: 段落元素
+            run_data: run样式数据
+        """
+        css_styles = []
+        
+        # 字体名称
+        font_name = run_data.get('font_name')
+        if font_name:
+            css_styles.append(f"font-family: '{font_name}'")
+        
+        # 字体大小
+        font_size = run_data.get('font_size')
+        if font_size:
+            try:
+                size_value = float(font_size)
+                css_styles.append(f"font-size: {size_value}pt")
+            except (ValueError, TypeError):
+                pass
+        
+        # 字体颜色
+        font_color = run_data.get('font_color')
+        if font_color and font_color.startswith('#'):
+            css_styles.append(f"color: {font_color}")
+        
+        # 高亮颜色
+        highlight_color = run_data.get('highlight_color')
+        if highlight_color and highlight_color.startswith('#'):
+            css_styles.append(f"background-color: {highlight_color}")
+        
+        # 应用样式到段落元素
+        if css_styles:
+            self._add_css_styles(paragraph_element, css_styles)
+            logger.debug(f"  段落级样式: {'; '.join(css_styles)}")
+        
+        # 处理加粗、斜体、下划线 - 如果整个段落都是这些样式，可以考虑使用strong/em标签
+        # 但这里我们保持段落内容不变，因为这些是语义标签
+        # 如果需要，可以添加font-weight/font-style到CSS
+        if run_data.get('bold'):
+            existing_style = paragraph_element.get('style', '')
+            if 'font-weight' not in existing_style:
+                self._add_css_styles(paragraph_element, ['font-weight: bold'])
+        
+        if run_data.get('italic'):
+            existing_style = paragraph_element.get('style', '')
+            if 'font-style' not in existing_style:
+                self._add_css_styles(paragraph_element, ['font-style: italic'])
+        
+        if run_data.get('underline'):
+            existing_style = paragraph_element.get('style', '')
+            if 'text-decoration' not in existing_style:
+                self._add_css_styles(paragraph_element, ['text-decoration: underline'])
+    
+    def _apply_mixed_inline_styles(self, paragraph_element, runs_data: List[Dict[str, Any]]):
+        """
+        对混合样式的段落应用内联span标签
+        只对与段落默认样式不同的run应用span标签
+        
+        Args:
+            paragraph_element: 段落元素
+            runs_data: runs样式数据列表
+        """
+        # 获取段落HTML内容
         para_html = str(paragraph_element)
         if not para_html:
             return
         
-        # 构建新的HTML内容，包含内联样式
-        new_html_parts = []
+        # 找到最常见的样式作为段落默认样式
+        default_style = self._get_most_common_style(runs_data)
+        logger.debug(f"  段落默认样式: {default_style}")
+        
         processed_runs = set()
         
         # 遍历每个run并应用样式
@@ -211,16 +328,25 @@ class ParaIdStyleApplicator:
             if not run_text or i in processed_runs:
                 continue
             
+            # 检查这个run的样式是否与默认样式不同
+            if self._is_same_style(run_data, default_style):
+                # 样式与默认相同，不需要添加span
+                logger.debug(f"  跳过默认样式run: {run_text[:20]}...")
+                processed_runs.add(i)
+                continue
+            
             # 创建带样式的run文本
             styled_run = self._create_styled_run(run_text, run_data)
             
             # 尝试替换HTML中的文本
-            # 使用更宽松的匹配来处理HTML实体编码
             import html
+            import re
+            
             run_html = html.escape(run_text)
             run_html_escaped = run_text.replace('<', '&lt;').replace('>', '&gt;').replace('&', '&amp;')
             
             # 尝试多种替换方式
+            new_html = None
             if run_text in para_html:
                 new_html = para_html.replace(run_text, styled_run, 1)
             elif run_html in para_html:
@@ -229,23 +355,19 @@ class ParaIdStyleApplicator:
                 new_html = para_html.replace(run_html_escaped, styled_run, 1)
             else:
                 # 如果都不匹配，使用正则表达式
-                import re
-                # 转义特殊字符
                 escaped_text = re.escape(run_text)
                 pattern = re.compile(escaped_text)
                 match = pattern.search(para_html)
                 if match:
                     new_html = para_html[:match.start()] + styled_run + para_html[match.end():]
-                else:
-                    continue
             
-            para_html = new_html
-            processed_runs.add(i)
-            logger.debug(f"  应用内联样式: {run_text[:20]}... -> {styled_run[:50]}...")
+            if new_html:
+                para_html = new_html
+                processed_runs.add(i)
+                logger.debug(f"  应用内联样式: {run_text[:20]}... -> {styled_run[:50]}...")
         
         # 如果有修改，更新段落内容
         if processed_runs:
-            # 使用BeautifulSoup重新解析并替换内容
             try:
                 soup = BeautifulSoup(para_html, 'html.parser')
                 # 保留原始标签属性
@@ -265,6 +387,62 @@ class ParaIdStyleApplicator:
                 # 回退方案：直接设置HTML
                 paragraph_element.clear()
                 paragraph_element.append(para_html)
+    
+    def _get_most_common_style(self, runs_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        获取最常见的样式作为段落默认样式
+        
+        Args:
+            runs_data: runs样式数据列表
+            
+        Returns:
+            最常见的样式字典
+        """
+        if not runs_data:
+            return {}
+        
+        # 统计每种样式的出现次数
+        style_counts = {}
+        for run in runs_data:
+            # 创建样式的哈希键
+            style_key = tuple(sorted([
+                (k, str(v)) for k, v in run.items() 
+                if k in ['bold', 'italic', 'underline', 'font_name', 'font_size', 'font_color', 'highlight_color'] and v is not None
+            ]))
+            style_counts[style_key] = style_counts.get(style_key, 0) + 1
+        
+        # 找到最常见的样式
+        if style_counts:
+            most_common_key = max(style_counts.keys(), key=lambda k: style_counts[k])
+            # 找到对应的run数据
+            for run in runs_data:
+                style_key = tuple(sorted([
+                    (k, str(v)) for k, v in run.items() 
+                    if k in ['bold', 'italic', 'underline', 'font_name', 'font_size', 'font_color', 'highlight_color'] and v is not None
+                ]))
+                if style_key == most_common_key:
+                    return run
+        
+        return runs_data[0] if runs_data else {}
+    
+    def _is_same_style(self, run_data: Dict[str, Any], default_style: Dict[str, Any]) -> bool:
+        """
+        检查run的样式是否与默认样式相同
+        
+        Args:
+            run_data: run样式数据
+            default_style: 默认样式数据
+            
+        Returns:
+            如果样式相同返回True
+        """
+        style_keys = ['bold', 'italic', 'underline', 'font_name', 'font_size', 'font_color', 'highlight_color']
+        
+        for key in style_keys:
+            if run_data.get(key) != default_style.get(key):
+                return False
+        
+        return True
     
     def _create_styled_run(self, text: str, run_data: Dict[str, Any]) -> str:
         """

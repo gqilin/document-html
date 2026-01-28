@@ -37,6 +37,12 @@ except ImportError:
     PDFPLUMBER_AVAILABLE = False
 
 try:
+    import fitz  # PyMuPDF
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    PYMUPDF_AVAILABLE = False
+
+try:
     from ebooklib import epub
     from bs4 import BeautifulSoup
     EPUBLIB_AVAILABLE = True
@@ -64,6 +70,11 @@ class EnhancedDocumentConverter:
         
         # 检查可用性
         self.pandoc_available = self.pandoc_converter.pandoc_available
+        
+        # 导入改进的PDF转换器
+        if PYMUPDF_AVAILABLE:
+            from src.pdf_converter import ImprovedPDFConverter
+            self.pdf_converter = ImprovedPDFConverter()
     
     def convert_to_html(self, input_file: str, output_file: Optional[str] = None) -> Optional[str]:
         """
@@ -474,10 +485,20 @@ class EnhancedDocumentConverter:
             raise RuntimeError(f"Pandoc conversion failed: {e.stderr.decode()}")
     
     def _convert_pdf_to_html(self, input_file: str, output_file: str) -> str:
-        """PDF转换（使用pdfplumber提取文本）"""
-        if not PDFPLUMBER_AVAILABLE:
-            raise RuntimeError("pdfplumber is not available for PDF conversion")
-        
+        """PDF转换（使用改进的转换器）"""
+        if PYMUPDF_AVAILABLE:
+            # 使用改进的PyMuPDF转换器
+            print("使用改进的PyMuPDF转换器...")
+            return self.pdf_converter.convert_to_html(input_file, output_file)
+        elif PDFPLUMBER_AVAILABLE:
+            # 回退到旧的pdfplumber方案
+            print("PyMuPDF不可用，使用pdfplumber转换器...")
+            return self._convert_pdf_with_pdfplumber(input_file, output_file)
+        else:
+            raise RuntimeError("没有可用的PDF转换库（需要PyMuPDF或pdfplumber）")
+    
+    def _convert_pdf_with_pdfplumber(self, input_file: str, output_file: str) -> str:
+        """PDF转换（使用pdfplumber提取文本 - 旧方案）"""
         import pdfplumber
         from html import escape
         

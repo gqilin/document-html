@@ -14,6 +14,28 @@ except ImportError:
     DOCX_AVAILABLE = False
 
 
+# Word高亮颜色到CSS十六进制的映射
+# 基于 WD_COLOR_INDEX 枚举值
+HIGHLIGHT_COLOR_MAP = {
+    1: '#000000',   # BLACK
+    2: '#0000FF',   # BLUE
+    3: '#00FFFF',   # TURQUOISE
+    4: '#00FF00',   # BRIGHT_GREEN
+    5: '#FF00FF',   # PINK
+    6: '#FF0000',   # RED
+    7: '#FFFF00',   # YELLOW
+    8: '#FFFFFF',   # WHITE
+    9: '#000080',   # DARK_BLUE
+    10: '#008080',  # TEAL
+    11: '#008000',  # GREEN
+    12: '#800080',  # VIOLET
+    13: '#800000',  # DARK_RED
+    14: '#808000',  # DARK_YELLOW
+    15: '#808080',  # GRAY_50
+    16: '#C0C0C0',  # GRAY_25
+}
+
+
 class ParagraphIdExtractor:
     """提取Word文档段落的唯一ID和样式信息"""
     
@@ -86,7 +108,7 @@ class ParagraphIdExtractor:
     def _extract_runs_data(self, para) -> list:
         """提取段落中文本片段的样式信息"""
         runs_data = []
-        
+
         try:
             for i, run in enumerate(para.runs):
                 try:
@@ -94,7 +116,7 @@ class ParagraphIdExtractor:
                     font_color_hex = None
                     if run.font.color:
                         font_color_hex = self._get_color_hex(run.font.color)
-                    
+
                     # 字体大小处理
                     font_size = None
                     if run.font.size:
@@ -103,7 +125,22 @@ class ParagraphIdExtractor:
                         except:
                             # 如果不是Length对象，尝试直接使用
                             font_size = float(run.font.size)
-                    
+
+                    # 提取高亮颜色
+                    highlight_color_hex = None
+                    try:
+                        highlight = run.font.highlight_color
+                        if highlight:
+                            # highlight 是 WD_COLOR_INDEX 枚举，获取其数值
+                            highlight_value = highlight.value if hasattr(highlight, 'value') else int(highlight)
+                            highlight_color_hex = HIGHLIGHT_COLOR_MAP.get(highlight_value)
+                    except ValueError:
+                        # 忽略 'none' 值等无效高亮颜色
+                        pass
+                    except Exception:
+                        # 其他错误也忽略，不影响整体流程
+                        pass
+
                     run_data = {
                         'id': f"run_{i}",  # 简化ID生成
                         'text': run.text if run.text else '',
@@ -113,7 +150,7 @@ class ParagraphIdExtractor:
                         'font_name': run.font.name,
                         'font_size': font_size,
                         'font_color': font_color_hex,
-                        'highlight_color': None  # 暂时禁用highlight，避免错误
+                        'highlight_color': highlight_color_hex  # 现在正确提取高亮颜色
                     }
                     runs_data.append(run_data)
                 except Exception as e:

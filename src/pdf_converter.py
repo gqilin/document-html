@@ -131,15 +131,13 @@ class ImprovedPDFConverter:
         html_parts.append('    </style>')
         html_parts.append('</head>')
         html_parts.append('<body>')
-        html_parts.append('    <div class="document">')
         
-        # 处理每一页
+        # 处理每一页，直接将内容添加到body
         for page_num in range(len(doc)):
             page = doc[page_num]
-            page_html = self._convert_page(page, page_num)
-            html_parts.append(page_html)
+            page_content = self._convert_page_content(page, page_num)
+            html_parts.extend(page_content)
         
-        html_parts.append('    </div>')
         html_parts.append('</body>')
         html_parts.append('</html>')
         
@@ -159,21 +157,9 @@ class ImprovedPDFConverter:
             line-height: 1.8;
             margin: 40px;
             color: #333;
-        }
-        .document {
             max-width: 800px;
-            margin: 0 auto;
-        }
-        .page {
-            margin-bottom: 40px;
-            padding-bottom: 20px;
-            border-bottom: 1px solid #ddd;
-        }
-        .page-number {
-            text-align: center;
-            color: #666;
-            font-size: 0.9em;
-            margin-top: 20px;
+            margin-left: auto;
+            margin-right: auto;
         }
         p {
             margin: 0.8em 0;
@@ -206,8 +192,8 @@ class ImprovedPDFConverter:
         }
         '''
     
-    def _convert_page(self, page: fitz.Page, page_num: int) -> str:
-        """转换单个页面"""
+    def _convert_page_content(self, page: fitz.Page, page_num: int) -> List[str]:
+        """转换单个页面的内容为HTML元素列表"""
         # 获取页面文本块
         blocks = self._extract_text_blocks(page)
         
@@ -222,9 +208,8 @@ class ImprovedPDFConverter:
         if self.extract_images:
             page_images = self._extract_page_images(page, page_num)
         
-        # 生成HTML
+        # 生成HTML元素列表
         html_parts = []
-        html_parts.append(f'        <div class="page" id="page-{page_num + 1}">')
         
         # 插入图片到合适的位置
         for para in paragraphs:
@@ -245,21 +230,18 @@ class ImprovedPDFConverter:
             for img in images_to_insert:
                 img_html = self._format_image(img)
                 if img_html:
-                    html_parts.append(f'            {img_html}')
+                    html_parts.append(img_html)
             
             if para_html:
-                html_parts.append(f'            {para_html}')
+                html_parts.append(para_html)
         
         # 添加剩余的图片（在页面底部）
         for img in page_images:
             img_html = self._format_image(img)
             if img_html:
-                html_parts.append(f'            {img_html}')
+                html_parts.append(img_html)
         
-        html_parts.append(f'            <div class="page-number">- {page_num + 1} -</div>')
-        html_parts.append('        </div>')
-        
-        return '\n'.join(html_parts)
+        return html_parts
     
     def _extract_text_blocks(self, page: fitz.Page) -> List[Dict[str, Any]]:
         """

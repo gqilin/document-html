@@ -76,6 +76,11 @@ def convert_document():
         
         # 保存上传的文件
         filename = secure_filename(file.filename)
+        
+        # 如果secure_filename移除了中文名（只剩下扩展名），使用原始文件名
+        if not filename or '.' not in filename or filename.startswith('.'):
+            filename = file.filename
+        
         upload_path = os.path.join(uploads_dir, filename)
         file.save(upload_path)
         

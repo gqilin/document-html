@@ -424,15 +424,50 @@ class EnhancedDocumentConverter:
             
             input_format = format_map.get(file_type, 'plain')
             
-            # 执行pandoc转换
-            cmd = [
-                'pandoc', '-f', input_format, '-t', 'html',
-                input_file, '-o', output_file,
-                '--standalone', '--embed-resources',
-                '--wrap=none'
-            ]
+            # 确保epub文件使用正确的格式
+            if file_type == 'epub' and input_format == 'plain':
+                input_format = 'epub'  # 强制使用epub格式
+                print(f"强制将epub文件格式设置为 'epub'")
             
-            subprocess.run(cmd, check=True, capture_output=True)
+            # 对于非docx格式，使用pandoc直接转换（不使用paraId相关逻辑）
+            if file_type != 'docx':
+                cmd = [
+                    'pandoc', '-f', input_format, '-t', 'html',
+                    input_file, '-o', output_file,
+                    '--standalone', '--embed-resources',
+                    '--wrap=none'
+                ]
+                
+                subprocess.run(cmd, check=True, capture_output=True)
+                return output_file
+            
+            # docx格式：使用paraId相关逻辑
+            # 第一步：提取段落样式数据（包含paraId）
+            print(f"提取paraId和样式信息...")
+            paragraph_data = self.para_id_extractor.extract_with_text_fallback(input_file)
+            print(f"提取到 {len(paragraph_data)} 个段落的样式数据")
+            
+            # 第二步：提取图片
+            print(f"提取文档中的图片...")
+            self._extract_images_from_docx(input_file)
+            
+            # 第三步：使用pandoc转换并保留paraId
+            print(f"使用Pandoc转换并保留paraId...")
+            html_with_ids = self.pandoc_converter.convert_with_para_id(input_file, paragraph_data)
+            print("Pandoc转换完成")
+            
+            # 第四步：根据paraId应用样式
+            print(f"应用样式到HTML段落...")
+            final_html = self.style_applicator.apply_styles_by_para_id(html_with_ids, paragraph_data)
+            
+            # 第五步：添加CSS样式和图片处理
+            enhanced_html = self._enhance_html_with_resources(final_html, paragraph_data)
+            
+            # 第六步：保存结果
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(enhanced_html)
+            
+            print(f"转换完成: {output_file}")
             return output_file
             
         except subprocess.CalledProcessError as e:
@@ -448,14 +483,23 @@ class EnhancedDocumentConverter:
         return self._convert_with_pandoc(input_file, output_file)
     
     def _convert_epub_to_html(self, input_file: str, output_file: str) -> str:
-        """EPUB转换（使用原有方法）"""
-        if not EPUBLIB_AVAILABLE:
-            # 回退到pandoc转换
-            return self._convert_with_pandoc(input_file, output_file)
+        """EPUB转换（使用pandoc直接指定epub格式）"""
+        if not self.pandoc_available:
+            raise RuntimeError("pandoc is not available")
         
-        # 这里可以复用原有的EPUB转换逻辑
-        # 为了简化，暂时使用pandoc转换
-        return self._convert_with_pandoc(input_file, output_file)
+        # 直接使用pandoc转换，强制指定epub格式
+        cmd = [
+            'pandoc', '-f', 'epub', '-t', 'html',
+            input_file, '-o', output_file,
+            '--standalone', '--embed-resources',
+            '--wrap=none'
+        ]
+        
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+            return output_file
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Pandoc conversion failed: {e.stderr.decode()}")
     
     def get_supported_formats(self) -> list:
         """获取支持的输入格式"""

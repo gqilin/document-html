@@ -10,6 +10,17 @@ from html import escape
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 
+# 导入文本标准化器
+try:
+    from .text_normalizer import normalize_pdf_text
+    TEXT_NORMALIZER_AVAILABLE = True
+except ImportError:
+    try:
+        from src.text_normalizer import normalize_pdf_text
+        TEXT_NORMALIZER_AVAILABLE = True
+    except ImportError:
+        TEXT_NORMALIZER_AVAILABLE = False
+
 
 class ImprovedPDFConverter:
     """
@@ -378,11 +389,12 @@ class ImprovedPDFConverter:
     
     def _clean_text(self, text: str) -> str:
         """清理文本"""
-        # 去除多余空格
-        text = re.sub(r' +', ' ', text)
-        
-        # 修复标点位置问题
-        text = self._fix_punctuation(text)
+        # 使用文本标准化器处理全角字符和特殊符号
+        if TEXT_NORMALIZER_AVAILABLE:
+            text = normalize_pdf_text(text)
+        else:
+            # 降级处理：基本的标点修复
+            text = self._fix_punctuation(text)
         
         # 去除控制字符
         text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f]', '', text)

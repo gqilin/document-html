@@ -64,8 +64,9 @@ class ParagraphIdExtractor:
         for para in doc.paragraphs:
             para_id = self._get_paragraph_id(para)
             
-            # 如果没有paraId，但有文本内容，强制生成ID
-            if not para_id and para.text.strip():
+            # 如果没有paraId，但有文本内容或包含图片，强制生成ID
+            has_image = self._paragraph_contains_image(para)
+            if not para_id and (para.text.strip() or has_image):
                 para_id = f"hash_text_{hash(str(para._element.xml)) % 1000000:06d}"
             
             if para_id:

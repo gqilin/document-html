@@ -2,10 +2,13 @@
 """
 改进的PDF到HTML转换器
 针对双层可复制文字PDF优化
+支持图片提取和本地保存
 """
 
 import fitz  # PyMuPDF
 import re
+import os
+import io
 from html import escape
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
@@ -21,6 +24,17 @@ except ImportError:
     except ImportError:
         TEXT_NORMALIZER_AVAILABLE = False
 
+# 导入图片下载器
+try:
+    from .image_downloader import ImageDownloader
+    IMAGE_DOWNLOADER_AVAILABLE = True
+except ImportError:
+    try:
+        from src.image_downloader import ImageDownloader
+        IMAGE_DOWNLOADER_AVAILABLE = True
+    except ImportError:
+        IMAGE_DOWNLOADER_AVAILABLE = False
+
 
 class ImprovedPDFConverter:
     """
@@ -33,10 +47,33 @@ class ImprovedPDFConverter:
     4. 去除重复文字层
     """
     
-    def __init__(self):
+    def __init__(self, images_dir: Optional[str] = None):
         self.y_tolerance = 3.0  # Y轴容差，用于判断同一行
         self.x_tolerance = 5.0  # X轴容差，用于判断相邻文本
         self.min_text_length = 2  # 最小文本长度
+        
+        # 图片相关设置
+        self.extract_images = True  # 是否提取图片
+        self.image_min_size = 100  # 图片最小尺寸（像素）
+        self.image_min_bytes = 1024  # 图片最小字节数
+        
+        # 初始化图片下载器
+        if images_dir:
+            self.images_dir = Path(images_dir)
+        else:
+            # 默认使用项目根目录下的uploads/images
+            project_root = Path(__file__).parent.parent
+            self.images_dir = project_root / 'uploads' / 'images'
+        
+        self.images_dir.mkdir(parents=True, exist_ok=True)
+        
+        if IMAGE_DOWNLOADER_AVAILABLE:
+            self.image_downloader = ImageDownloader(str(self.images_dir))
+        else:
+            self.image_downloader = None
+        
+        # 记录提取的图片
+        self.extracted_images = []
         
     def convert_to_html(self, pdf_path: str, output_path: Optional[str] = None) -> str:
         """
@@ -134,6 +171,18 @@ class ImprovedPDFConverter:
         h3 { font-size: 1.3em; }
         .center { text-align: center; }
         .right { text-align: right; }
+        
+        /* PDF图片样式 */
+        p.pdf-image {
+            text-indent: 0;
+            margin: 1em 0;
+        }
+        p.pdf-image img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+        }
         '''
     
     def _convert_page(self, page: fitz.Page, page_num: int) -> str:
@@ -147,14 +196,44 @@ class ImprovedPDFConverter:
         # 将行组合成段落
         paragraphs = self._lines_to_paragraphs(lines)
         
+        # 提取页面中的图片
+        page_images = []
+        if self.extract_images:
+            page_images = self._extract_page_images(page, page_num)
+        
         # 生成HTML
         html_parts = []
         html_parts.append(f'        <div class="page" id="page-{page_num + 1}">')
         
+        # 插入图片到合适的位置
         for para in paragraphs:
+            # 检查是否有图片应该插入在这个段落附近
+            para_y = para.get('y0', 0)
             para_html = self._format_paragraph(para)
+            
+            # 查找应该在这个段落之前插入的图片
+            images_to_insert = []
+            for img in page_images[:]:
+                img_y = img.get('y0', 0)
+                # 如果图片在这个段落上方附近，先插入图片
+                if img_y < para_y and abs(img_y - para_y) < 100:
+                    images_to_insert.append(img)
+                    page_images.remove(img)
+            
+            # 插入图片
+            for img in images_to_insert:
+                img_html = self._format_image(img)
+                if img_html:
+                    html_parts.append(f'            {img_html}')
+            
             if para_html:
                 html_parts.append(f'            {para_html}')
+        
+        # 添加剩余的图片（在页面底部）
+        for img in page_images:
+            img_html = self._format_image(img)
+            if img_html:
+                html_parts.append(f'            {img_html}')
         
         html_parts.append(f'            <div class="page-number">- {page_num + 1} -</div>')
         html_parts.append('        </div>')
@@ -453,6 +532,137 @@ class ImprovedPDFConverter:
         else:
             class_attr = ' class="no-indent"' if is_center else ''
             return f'<p{class_attr}>{text}</p>'
+    
+    def _extract_page_images(self, page: fitz.Page, page_num: int) -> List[Dict[str, Any]]:
+        """
+        提取页面中的图片
+        
+        Args:
+            page: PDF页面
+            page_num: 页码
+            
+        Returns:
+            图片信息列表
+        """
+        images = []
+        
+        try:
+            # 获取页面中的图片列表
+            image_list = page.get_images(full=True)
+            
+            for img_index, img in enumerate(image_list):
+                xref = img[0]
+                base_image = page.parent.extract_image(xref)
+                
+                if not base_image:
+                    continue
+                
+                image_bytes = base_image["image"]
+                image_ext = base_image["ext"]
+                
+                # 过滤太小的图片
+                if len(image_bytes) < self.image_min_bytes:
+                    continue
+                
+                # 生成文件名
+                filename = f"pdf_page{page_num + 1}_img{img_index + 1}.{image_ext}"
+                file_path = self.images_dir / filename
+                
+                # 保存图片
+                with open(file_path, 'wb') as f:
+                    f.write(image_bytes)
+                
+                # 获取图片在页面上的位置
+                img_rect = self._get_image_rect(page, xref)
+                
+                image_info = {
+                    'filename': filename,
+                    'path': str(file_path),
+                    'relative_path': f"../uploads/images/{filename}",
+                    'page': page_num + 1,
+                    'index': img_index + 1,
+                    'size': len(image_bytes),
+                    'ext': image_ext,
+                    'y0': img_rect[1] if img_rect else 0,
+                    'x0': img_rect[0] if img_rect else 0,
+                    'width': img_rect[2] - img_rect[0] if img_rect else 0,
+                    'height': img_rect[3] - img_rect[1] if img_rect else 0
+                }
+                
+                images.append(image_info)
+                self.extracted_images.append(image_info)
+                
+                print(f"  提取图片: {filename} ({len(image_bytes)} bytes)")
+                
+        except Exception as e:
+            print(f"  提取图片时出错: {e}")
+        
+        # 按Y坐标排序（从上到下）
+        images.sort(key=lambda x: x['y0'])
+        
+        return images
+    
+    def _get_image_rect(self, page: fitz.Page, xref: int) -> Optional[Tuple[float, float, float, float]]:
+        """
+        获取图片在页面上的位置
+        
+        Args:
+            page: PDF页面
+            xref: 图片xref
+            
+        Returns:
+            图片位置 (x0, y0, x1, y1) 或 None
+        """
+        try:
+            # 遍历页面内容查找图片位置
+            for img in page.get_images():
+                if img[0] == xref:
+                    # 尝试从页面字典中获取位置信息
+                    page_dict = page.get_text("dict")
+                    for block in page_dict.get("blocks", []):
+                        if block.get("type") == 1:  # 图片块
+                            return block.get("bbox")
+            
+            # 如果找不到精确位置，返回页面中心位置
+            rect = page.rect
+            return (rect.x0, rect.y0, rect.x1, rect.y1)
+            
+        except Exception:
+            return None
+    
+    def _format_image(self, img_info: Dict[str, Any]) -> str:
+        """
+        格式化图片为HTML
+        
+        Args:
+            img_info: 图片信息字典
+            
+        Returns:
+            HTML img标签
+        """
+        relative_path = img_info.get('relative_path', '')
+        width = img_info.get('width', 0)
+        height = img_info.get('height', 0)
+        
+        # 构建img标签
+        img_attrs = [f'src="{relative_path}"', 'alt="PDF图片"']
+        
+        # 添加尺寸属性（如果有效）
+        if width > 0 and height > 0:
+            # 限制最大宽度
+            max_width = 600
+            if width > max_width:
+                ratio = max_width / width
+                width = max_width
+                height = int(height * ratio)
+            
+            img_attrs.append(f'width="{int(width)}"')
+            img_attrs.append(f'height="{int(height)}"')
+        
+        img_tag = f'<img {" ".join(img_attrs)} />'
+        
+        # 包装在段落中，居中显示
+        return f'<p class="pdf-image" style="text-align: center;">{img_tag}</p>'
 
 
 # 兼容性函数
